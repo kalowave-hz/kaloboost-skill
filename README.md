@@ -9,9 +9,12 @@ Write commands (`outreach create/create-template/cancel`, `chat send`, `sample r
 ## Install
 
 ```sh
-npx skills add sailtonight/kaloboost-skill               # project-level
-npx skills add sailtonight/kaloboost-skill -g            # global
+npx skills add kalowave-hz/kaloboost-skill               # project-level
+npx skills add kalowave-hz/kaloboost-skill -g            # global
 ```
+
+The repository is private: installing and the upgrade check use your git credentials for GitHub
+(e.g. `gh auth login && gh auth setup-git`) and need read access to `kalowave-hz/kaloboost-skill`.
 
 ## Configure
 
@@ -35,7 +38,8 @@ Optional settings:
 | endpoint (default `https://open.kaloboost.com/openapi/v1`) | `KALOBOOST_BASE_URL` | `--env prod\|test` or `--base-url <URL>` |
 | upgrade notice | `KALOBOOST_NO_UPDATE_CHECK=1` | `--update-check off` |
 
-The upgrade notice compares the CLI version with the newest tag on GitHub in a detached background process and prints a one-line hint to stderr at most once an hour.
+The upgrade notice compares the CLI version with the newest tag on GitHub (`git ls-remote`, with your git
+credentials) in a detached background process and prints a one-line hint to stderr at most once an hour.
 
 ## Usage
 
@@ -100,7 +104,7 @@ manual clone is required:
       "args": [
         "--python", ">=3.11",
         "--from",
-        "kaloboost-mcp[mcp] @ git+https://github.com/sailtonight/kaloboost-skill",
+        "kaloboost-mcp[mcp] @ git+https://github.com/kalowave-hz/kaloboost-skill",
         "kaloboost-mcp"
       ],
       "env": {

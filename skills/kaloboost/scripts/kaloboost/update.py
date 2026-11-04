@@ -1,5 +1,8 @@
 """Upgrade notice: compare __version__ against the newest tag on GitHub.
 
+The repository is private, so tags are read with `git ls-remote` (the user's git
+credentials) rather than the anonymous GitHub API, which answers 404 for it.
+
 Never blocks a command. The foreground run only reads the cache written by a
 previous run and, when that cache is stale, detaches a child process to refresh
 it. Two independent 1h debounces live in the cache: `checked_at` throttles the
@@ -15,14 +18,14 @@ import re
 import subprocess
 import sys
 import time
-import urllib.request
 from pathlib import Path
 
 from . import __version__
 from .config import Config, config_path
 
-REPO = "sailtonight/kaloboost-skill"
-TAGS_URL = f"https://api.github.com/repos/{REPO}/tags?per_page=20"
+REPO = "kalowave-hz/kaloboost-skill"
+GIT_URL = f"https://github.com/{REPO}.git"
+_NO_ASKPASS = "true" if os.name != "nt" else "cmd /c exit 1"  # answers nothing; git then gives up
 UPGRADE_CMD = f"npx skills add {REPO}"
 DEFAULT_INTERVAL = 3600.0
 _TAG_RE = re.compile(r"^v?(\d+(?:\.\d+)*)$")
@@ -66,27 +69,33 @@ def _write_state(updates: dict) -> None:
             pass
 
 
-def _urlopen_json(url: str, timeout: float):
-    req = urllib.request.Request(
-        url,
-        headers={"Accept": "application/vnd.github+json", "User-Agent": f"boost/{__version__}"},
+def _ls_remote_tags(timeout: float) -> list[str]:
+    """Tag names via `git ls-remote`; never prompts (no credentials -> empty list)."""
+    # Never ask for credentials: no terminal prompt, and every askpass hook (env, core.askPass,
+    # SSH_ASKPASS, Git Credential Manager UI) fails at once. Stored credentials still work.
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never",
+               GIT_ASKPASS=_NO_ASKPASS, SSH_ASKPASS=_NO_ASKPASS, SSH_ASKPASS_REQUIRE="never")
+    out = subprocess.run(
+        ["git", "-c", f"core.askPass={_NO_ASKPASS}", "ls-remote", "--tags", "--refs", GIT_URL],
+        capture_output=True, text=True, timeout=timeout, env=env, stdin=subprocess.DEVNULL,
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read())
+    if out.returncode != 0:
+        return []
+    return [line.rsplit("refs/tags/", 1)[1] for line in out.stdout.splitlines() if "refs/tags/" in line]
 
 
-def fetch_latest_tag(timeout: float = 5.0) -> str | None:
-    """Newest numeric tag on GitHub, or None if unreachable/private/untagged."""
-    tags = _urlopen_json(TAGS_URL, timeout)
-    if not isinstance(tags, list):
-        return None
+def latest_of(tags: list[str]) -> str | None:
     best, best_key = None, None
-    for tag in tags:
-        name = tag.get("name") if isinstance(tag, dict) else None
-        key = parse_version(name) if name else None
+    for name in tags:
+        key = parse_version(name)
         if key and (best_key is None or key > best_key):
             best, best_key = name, key
     return best
+
+
+def fetch_latest_tag(timeout: float = 10.0) -> str | None:
+    """Newest numeric tag on GitHub, or None if unreachable / no access / untagged."""
+    return latest_of(_ls_remote_tags(timeout))
 
 
 def refresh() -> None:
