@@ -25,6 +25,7 @@ from .config import Config, config_path
 
 REPO = "kalowave-hz/kaloboost-skill"
 GIT_URL = f"https://github.com/{REPO}.git"
+_NO_ASKPASS = "true" if os.name != "nt" else "cmd /c exit 1"  # answers nothing; git then gives up
 UPGRADE_CMD = f"npx skills add {REPO}"
 DEFAULT_INTERVAL = 3600.0
 _TAG_RE = re.compile(r"^v?(\d+(?:\.\d+)*)$")
@@ -70,9 +71,12 @@ def _write_state(updates: dict) -> None:
 
 def _ls_remote_tags(timeout: float) -> list[str]:
     """Tag names via `git ls-remote`; never prompts (no credentials -> empty list)."""
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
+    # Never ask for credentials: no terminal prompt, and every askpass hook (env, core.askPass,
+    # SSH_ASKPASS, Git Credential Manager UI) fails at once. Stored credentials still work.
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never",
+               GIT_ASKPASS=_NO_ASKPASS, SSH_ASKPASS=_NO_ASKPASS, SSH_ASKPASS_REQUIRE="never")
     out = subprocess.run(
-        ["git", "ls-remote", "--tags", "--refs", GIT_URL],
+        ["git", "-c", f"core.askPass={_NO_ASKPASS}", "ls-remote", "--tags", "--refs", GIT_URL],
         capture_output=True, text=True, timeout=timeout, env=env, stdin=subprocess.DEVNULL,
     )
     if out.returncode != 0:
