@@ -277,6 +277,11 @@ def _translate_code(status: int, err: dict, request_id: str | None, retry_after:
             help_lines=["Recipients must be creators of the shop's own market — resolve them with "
                         "`boost creator resolve @handle --region <shop region>` (see `boost shops`)"],
         )
+    if code == "INVALID_ARGUMENT" and reason == "UNSUPPORTED" and field in ("status", "type"):
+        return BoostError(
+            text, kind="parameter",
+            help_lines=[f"Unsupported {field} value; see SKILL.md (or this command's --help) for the current list"],
+        )
     if code == "INVALID_ARGUMENT":
         return BoostError(
             text, kind="parameter",

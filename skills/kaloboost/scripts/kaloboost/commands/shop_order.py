@@ -87,8 +87,9 @@ def _window_flags(win) -> list:
     return common.flag_pairs(**{"from": frm, "to": to})
 
 
-def _choices(value: str | None, flag: str, known: tuple, *, single: bool = False) -> str | None:
-    """Comma list -> upper-cased, de-duplicated, comma-joined; unknown or empty items are usage errors."""
+def _csv(value: str | None, flag: str, *, single: bool = False) -> str | None:
+    """Comma list -> upper-cased, de-duplicated, comma-joined. Format only: whether a value is
+    supported is the server's call (400 UNSUPPORTED), so new TikTok values need no CLI release."""
     if value is None:
         return None
     items = [p.strip().upper() for p in value.split(",")]
@@ -96,9 +97,6 @@ def _choices(value: str | None, flag: str, known: tuple, *, single: bool = False
         raise UsageError(f"{flag} has an empty item: '{value}'")
     if single and len(items) > 1:
         raise UsageError(f"{flag} takes one value, got {len(items)}", ["Run once per status"])
-    bad = [p for p in items if p not in known]
-    if bad:
-        raise UsageError(f"unknown {flag} value(s): {', '.join(bad)}", [f"valid values: {' '.join(known)}"])
     return ",".join(dict.fromkeys(items))
 
 
@@ -132,7 +130,7 @@ def _order_row(o: dict) -> dict:
 def shop_orders(cfg, opts, args):
     shop = common.shop(cfg, opts)
     win = _window(opts)
-    status = _choices(opts.get("status"), "--status", ORDER_STATUSES, single=True)
+    status = _csv(opts.get("status"), "--status", single=True)
     cancel = "true" if opts.get("buyer_cancel_requested") else None
     params = {"shop_id": shop, **_window_params(win), "status": status,
               "buyer_cancel_requested": cancel, "sort": opts.get("sort")}
@@ -194,8 +192,8 @@ def shop_returns(cfg, opts, args):
     if order is not None and not order.isdigit():
         raise UsageError(f"--order must be a TikTok order id (digits), got '{order}'")
     win = _window(opts, required=order is None)
-    status = _choices(opts.get("status"), "--status", RETURN_STATUSES)
-    rtype = _choices(opts.get("type"), "--type", RETURN_TYPES)
+    status = _csv(opts.get("status"), "--status")
+    rtype = _csv(opts.get("type"), "--type")
     params = {"shop_id": shop, **_window_params(win), "channel_order_id": order, "status": status,
               "type": rtype, "sort": opts.get("sort")}
     rows, cursor, pages = common.fetch_pages(cfg, "/shop-returns", params, dict(opts, limit=limit),

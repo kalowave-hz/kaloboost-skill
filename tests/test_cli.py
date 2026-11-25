@@ -1004,8 +1004,8 @@ def test_shop_order_list_validates_locally(capsys, env):
         ["--from", "7d", "--updated-from", "1d"],                # both time groups
         ["--from", "2026-01-01", "--to", "2026-06-01"],          # over 90 days
         ["--updated-from", "2026-11-02", "--updated-to", "2026-11-01"],
-        ["--status", "SHIPPED"],
         ["--status", "AWAITING_SHIPMENT,DELIVERED"],             # TikTok takes one status
+        ["--status", ""], ["--status", " "],
         ["--sort", "up"],
     ):
         code, out = run(capsys, "shop-order", "list", "--shop", "s", *argv)
@@ -1048,8 +1048,8 @@ def test_shop_return_list_window_rules(capsys, env):
 
 def test_shop_return_list_validates_locally(capsys, env):
     for argv in (
-        ["--limit", "9"], ["--limit", "51"], ["--type", "SWAP"], ["--type", "REFUND,,EXCHANGE"],
-        ["--status", "PENDING"], ["--order", "12a"], ["--from", "2026-01-01", "--to", "2026-06-01"],
+        ["--limit", "9"], ["--limit", "51"], ["--type", "REFUND,,EXCHANGE"], ["--type", ""],
+        ["--status", "BUYER_SHIPPED_ITEM, "], ["--order", "12a"], ["--from", "2026-01-01", "--to", "2026-06-01"],
     ):
         code, out = run(capsys, "shop-return", "list", "--shop", "s", *argv)
         assert code == 2, (argv, out)
@@ -1111,3 +1111,17 @@ def test_home_lists_shop_order_commands(capsys, env):
     assert code == 0
     for c in ("boost shop-order list", "boost shop-return list", "boost shop-auth create"):
         assert c in out
+
+
+def test_unknown_status_and_type_go_to_server(capsys, env):
+    env.responses["/shop-orders"] = err(400, "INVALID_ARGUMENT", "status", "UNSUPPORTED")
+    code, out = run(capsys, "shop-order", "list", "--shop", "s", "--status", "shipped")
+    assert code == 1 and env.requests[0][2]["status"] == "SHIPPED"
+    assert "[status/UNSUPPORTED]" in out and "Unsupported status value; see SKILL.md" in out
+    env.responses["/shop-returns"] = err(400, "INVALID_ARGUMENT", "type", "UNSUPPORTED")
+    code, out = run(capsys, "shop-return", "list", "--shop", "s", "--order", "1",
+                    "--status", "NEW_STATUS, NEW_STATUS", "--type", "SWAP,REFUND")
+    assert code == 1
+    q = env.requests[1][2]
+    assert (q["status"], q["type"]) == ("NEW_STATUS", "SWAP,REFUND")
+    assert "Unsupported type value; see SKILL.md" in out
