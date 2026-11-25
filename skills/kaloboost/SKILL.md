@@ -97,7 +97,10 @@ names what the account still needs) — another credential won't fix them.
 | `boost sample contents <id>` | videos/lives posted for a sample: views, likes, orders |
 | `boost sample review <id> --decision APPROVE\|REJECT` | `[write]` approve / reject a `PENDING` sample application on TikTok |
 | `boost content list` / `get <id>` | creator videos/lives of a shop with metrics; --creator --published-from |
-| `boost order list` | affiliate orders by order time; --from --to (≤90 days) |
+| `boost order list` | affiliate orders only (`orders` too), by order time; --from --to (≤90 days) |
+| `boost shop-order list` | all orders of a shop (not only affiliate): status, ship-by deadline, buyer paid; --from\|--updated-from --status (≤90 days) |
+| `boost shop-return list` | returns / refunds / replacements of a shop, seller to-dos and deadlines; --status --type --order (--limit 10-50) |
+| `boost shop-auth create` | authorization link for the shop owner: bind a new shop (--region) or re-authorize a bound one (--shop) |
 | `boost attribution list` / `get <id>` | affiliate attribution per order line; --creator --order --since |
 | `boost event list` | change events (outreach, collab, sample, new chat message); --types --since |
 | `boost webhook list` | push endpoints for change events |

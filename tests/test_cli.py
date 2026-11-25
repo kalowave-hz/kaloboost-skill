@@ -936,3 +936,178 @@ def test_creator_batch_get_shows_level(capsys, env):
     code, out = run(capsys, "creator", "get", "c1", "c2", "--region", "JP")
     assert code == 0, out
     assert "level" in out.splitlines()[0] and ",3," in out
+
+
+# --- shop orders / returns / authorization links (WP-23) -------------------------
+
+SHOP_ORDER = {
+    "channel_order_id": "587377468873737737", "status": "AWAITING_SHIPMENT",
+    "created_at": "2026-11-20T08:00:00Z",
+    "deadlines": {"ship_sla_at": "2026-11-22T08:00:00Z"},
+    "payment": {"sub_total": {"amount": "90", "currency": "IDR"}, "total_amount": {"amount": "100", "currency": "IDR"}},
+    "tracking_number": "JX123",
+    "line_items": [{"channel_line_item_id": "l1"}, {"channel_line_item_id": "l2"}],
+}
+
+SHOP_RETURN = {
+    "channel_return_id": "r1", "channel_order_id": "587377468873737737", "type": "RETURN_AND_REFUND",
+    "status": "BUYER_SHIPPED_ITEM", "created_at": "2026-11-21T00:00:00Z",
+    "seller_actions": [{"action": "SELLER_RESPOND_RECEIVE_PACKAGE", "deadline": "2026-11-24T00:00:00Z"}],
+    "refund": {"total": {"amount": "100", "currency": "IDR"}},
+}
+
+
+def test_shop_commands_resolve_past_shop_alias():
+    from kaloboost.cli import _resolve
+
+    assert _resolve(["shop-auth", "create"])[0].path == "shop-auth create"
+    assert _resolve(["shop-auth", "--shop", "1"])[0].path == "shop-auth create"
+    assert _resolve(["shop"])[0].path == "shops"
+    assert _resolve(["shop-orders"])[0].path == "shop-order list"
+    assert _resolve(["shop-returns", "list"])[0].path == "shop-return list"
+    assert _resolve(["orders"])[0].path == "order list"
+
+
+def test_shop_order_list_query_table_and_more_hint(capsys, env):
+    env.responses["/shop-orders"] = page([SHOP_ORDER], cursor="C1")
+    code, out = run(capsys, "shop-order", "list", "--shop", "s", "--from", "2026-11-01", "--to", "2026-11-25",
+                    "--status", "awaiting_shipment", "--buyer-cancel-requested", "--sort", "asc")
+    assert code == 0, out
+    method, path, query, _, _ = env.requests[0]
+    assert (method, path) == ("GET", "/shop-orders")
+    assert query == {
+        "shop_id": "s", "created_from": "2026-11-01T00:00:00Z", "created_to": "2026-11-25T00:00:00Z",
+        "status": "AWAITING_SHIPMENT", "buyer_cancel_requested": "true", "sort": "asc", "limit": "50",
+    }
+    assert "shop_orders[1]{channel_order_id,status,created_at,ship_by,lines,buyer_paid,tracking_number}:" in out
+    assert '"587377468873737737",AWAITING_SHIPMENT,"2026-11-20T08:00:00Z","2026-11-22T08:00:00Z",2,100 IDR,JX123' in out
+    assert ("More: `boost shop-order list --shop s --from 2026-11-01T00:00:00Z --to 2026-11-25T00:00:00Z "
+            "--status AWAITING_SHIPMENT --sort asc --buyer-cancel-requested --cursor C1`") in out
+
+
+def test_shop_order_list_updated_window_and_default(capsys, env):
+    code, _ = run(capsys, "shop-order", "list", "--shop", "s", "--updated-from", "2026-11-20", "--updated-to", "2026-11-21")
+    assert code == 0
+    q = env.requests[0][2]
+    assert (q["updated_from"], q["updated_to"]) == ("2026-11-20T00:00:00Z", "2026-11-21T00:00:00Z")
+    assert "created_from" not in q and "status" not in q and "sort" not in q and "buyer_cancel_requested" not in q
+    code, _ = run(capsys, "shop-order", "list", "--shop", "s")
+    assert code == 0
+    q = env.requests[1][2]
+    a = datetime.datetime.fromisoformat(q["created_from"].replace("Z", "+00:00"))
+    b = datetime.datetime.fromisoformat(q["created_to"].replace("Z", "+00:00"))
+    assert b - a == datetime.timedelta(days=30) and "updated_from" not in q
+
+
+def test_shop_order_list_validates_locally(capsys, env):
+    for argv in (
+        ["--from", "7d", "--updated-from", "1d"],                # both time groups
+        ["--from", "2026-01-01", "--to", "2026-06-01"],          # over 90 days
+        ["--updated-from", "2026-11-02", "--updated-to", "2026-11-01"],
+        ["--status", "SHIPPED"],
+        ["--status", "AWAITING_SHIPMENT,DELIVERED"],             # TikTok takes one status
+        ["--sort", "up"],
+    ):
+        code, out = run(capsys, "shop-order", "list", "--shop", "s", *argv)
+        assert code == 2, (argv, out)
+    assert env.requests == []
+
+
+def test_shop_order_list_json(capsys, env):
+    env.responses["/shop-orders"] = page([SHOP_ORDER], cursor="C2")
+    code, out = run(capsys, "shop-orders", "--shop", "s", "--json")
+    assert code == 0
+    assert json.loads(out) == {"data": [SHOP_ORDER], "next_cursor": "C2"}
+
+
+def test_shop_return_list_query_and_table(capsys, env):
+    env.responses["/shop-returns"] = page([SHOP_RETURN])
+    code, out = run(capsys, "shop-return", "list", "--shop", "s", "--order", "587377468873737737",
+                    "--status", "buyer_shipped_item, AWAITING_BUYER_SHIP", "--type", "REFUND,return_and_refund")
+    assert code == 0, out
+    method, path, query, _, _ = env.requests[0]
+    assert (method, path) == ("GET", "/shop-returns")
+    assert query == {
+        "shop_id": "s", "channel_order_id": "587377468873737737", "status": "BUYER_SHIPPED_ITEM,AWAITING_BUYER_SHIP",
+        "type": "REFUND,RETURN_AND_REFUND", "limit": "20",
+    }  # --order alone needs no time window
+    assert "shop_returns[1]{channel_return_id,channel_order_id,type,status,created_at,seller_todo,refund_total}:" in out
+    assert "SELLER_RESPOND_RECEIVE_PACKAGE by 2026-11-24T00:00:00Z" in out and "100 IDR" in out
+
+
+def test_shop_return_list_window_rules(capsys, env):
+    code, _ = run(capsys, "shop-return", "list", "--shop", "s")
+    assert code == 0
+    q = env.requests[0][2]
+    assert "created_from" in q and "created_to" in q and "channel_order_id" not in q
+    code, _ = run(capsys, "shop-return", "list", "--shop", "s", "--order", "1", "--updated-from", "7d", "--sort", "desc")
+    assert code == 0
+    q = env.requests[1][2]
+    assert "updated_from" in q and "updated_to" in q and q["sort"] == "desc" and q["channel_order_id"] == "1"
+
+
+def test_shop_return_list_validates_locally(capsys, env):
+    for argv in (
+        ["--limit", "9"], ["--limit", "51"], ["--type", "SWAP"], ["--type", "REFUND,,EXCHANGE"],
+        ["--status", "PENDING"], ["--order", "12a"], ["--from", "2026-01-01", "--to", "2026-06-01"],
+    ):
+        code, out = run(capsys, "shop-return", "list", "--shop", "s", *argv)
+        assert code == 2, (argv, out)
+    assert env.requests == []
+
+
+def test_shop_auth_create_needs_region_or_shop(capsys, env, monkeypatch):
+    monkeypatch.setenv("KALOBOOST_SHOP", "806")  # the default shop must not turn into a re-authorization
+    code, out = run(capsys, "shop-auth", "create")
+    assert code == 2 and "--region" in out and "--shop" in out
+    code, _ = run(capsys, "shop-auth", "create", "--region", "XX")
+    assert code == 2
+    assert env.requests == []
+
+
+def test_shop_auth_create_for_bound_shop(capsys, env):
+    env.responses["/shop-authorization-links"] = {"data": {
+        "authorization_url": "https://services.tiktokshop.com/open/authorize?service_id=1&state=p1",
+        "shop_region": "ID", "expires_at": "2026-11-25T14:00:00Z"}, "request_id": "r"}
+    code, out = run(capsys, "shop-auth", "create", "--shop", "806")
+    assert code == 0, out
+    method, path, query, headers, body = env.requests[0]
+    assert (method, path, query, body) == ("POST", "/shop-authorization-links", {}, {"shop_id": "806"})
+    assert "idempotency-key" not in headers
+    assert "https://services.tiktokshop.com/open/authorize?service_id=1&state=p1" in out
+    assert "2026-11-25T14:00:00Z" in out
+    assert "shop owner" in out and "once" in out and "one link per shop" in out
+    assert "rerun the command that failed" in out
+
+
+def test_shop_auth_create_new_shop_and_json(capsys, env):
+    data = {"authorization_url": "https://x/authorize", "shop_region": "ID", "expires_at": "2026-11-25T14:00:00Z"}
+    env.responses["/shop-authorization-links"] = {"data": data}
+    code, out = run(capsys, "shop-auth", "create", "--region", "id")
+    assert code == 0, out
+    assert env.requests[0][4] == {"shop_region": "ID"}
+    assert "boost shops" in out
+    code, out = run(capsys, "shop-auth", "create", "--region", "ID", "--json")
+    assert code == 0 and json.loads(out) == data
+
+
+def test_reauthorize_hints(capsys, env):
+    env.responses["/shop-orders"] = err(422, "CHANNEL_NOT_AVAILABLE", "shop_id", "SCOPE_MISSING")
+    code, out = run(capsys, "shop-order", "list", "--shop", "s")
+    assert code == 1 and "re-authorize" in out and "boost shop-auth create --shop" in out
+    env.responses["/shop-orders"] = err(422, "CHANNEL_NOT_AVAILABLE", "shop_id", "SHOP_NOT_API_AUTHORIZED")
+    code, out = run(capsys, "shop-order", "list", "--shop", "s")
+    assert code == 1 and "authorize TikTok Shop Open API" in out and "boost shop-auth create --shop" in out
+    env.responses["/shop-authorization-links"] = err(422, "CHANNEL_NOT_AVAILABLE", "company_id", "SHOP_QUOTA_EXCEEDED")
+    code, out = run(capsys, "shop-auth", "create", "--region", "ID")
+    assert code == 1 and "shop limit" in out and "--shop" in out
+    env.responses["/shop-authorization-links"] = err(422, "CHANNEL_NOT_AVAILABLE", "shop_region", "REGION_NOT_SUPPORTED")
+    code, out = run(capsys, "shop-auth", "create", "--region", "GB")
+    assert code == 1 and "Kaloboost web console" in out
+
+
+def test_home_lists_shop_order_commands(capsys, env):
+    code, out = run(capsys)
+    assert code == 0
+    for c in ("boost shop-order list", "boost shop-return list", "boost shop-auth create"):
+        assert c in out
