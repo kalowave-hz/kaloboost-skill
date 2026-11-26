@@ -17,7 +17,7 @@ The repository is public — installing and the upgrade check do not require Git
 
 ## Configure
 
-`boost` uses the **KaloData OpenAPI key** — the same key as the [kalodata skill](https://github.com/sailtonight/kalodata-skill)'s `kalo` CLI, read from the same place. If `kalo` already works on the machine, there is nothing to do.
+`boost` uses the **KaloData OpenAPI key** — the same key as the [kalodata skill](https://github.com/kalowave-hz/kalodata-skill)'s `kalo` CLI, read from the same place. If `kalo` already works on the machine, there is nothing to do.
 
 Otherwise get a key at [open-center/account](https://www.kalodata.com/open-center/account) → *generate key*, then:
 
