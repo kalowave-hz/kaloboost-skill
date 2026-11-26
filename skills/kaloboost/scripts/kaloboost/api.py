@@ -140,7 +140,8 @@ _SHOP_HINTS = {
 }
 
 _CHANNEL_HINTS = {
-    "SHOP_NOT_API_AUTHORIZED": "Ask the merchant to (re)authorize TikTok Shop Open API for this shop in Kaloboost; don't retry",
+    "SHOP_NOT_API_AUTHORIZED": "Ask the merchant to (re)authorize TikTok Shop Open API for this shop: "
+    "`boost shop-auth create --shop <SHOP_ID>` gives a link for the shop owner; don't retry until they have",
     "SHOP_NOT_CONNECTED": "The shop's TikTok authorization is not usable — reauthorize it in Kaloboost; don't retry",
     "SHOP_NOT_IN_COMPANY": "The shop is no longer bound to this company — check `boost shops`",
     "SUBSCRIPTION_PATH_DENIED": "The company's Kaloboost plan does not include outreach via API — contact Kaloboost",
@@ -153,8 +154,10 @@ _CHANNEL_HINTS = {
     "to check the shop's authorization in Kaloboost",
     "REGION_NOT_SUPPORTED": "This shop's market is not supported for this API — the merchant handles it in TikTok Seller "
     "Center; don't retry",
-    "SCOPE_MISSING": "The shop's TikTok Open API authorization lacks a permission — ask the merchant to re-authorize it "
-    "in Kaloboost; don't retry",
+    "SCOPE_MISSING": "This shop's authorization lacks a permission this needs — ask the shop owner to re-authorize: "
+    "`boost shop-auth create --shop <SHOP_ID>` gives the link; don't retry until they have",
+    "SHOP_QUOTA_EXCEEDED": "The company's plan has reached its shop limit, so no new shop can be bound — to re-authorize "
+    "an already bound shop, pass --shop <SHOP_ID> instead of --region",
     "NO_CHANNEL_APPLY_ID": "This sample record has no TikTok application id — it can only be handled in TikTok Seller Center",
     "AGENCY_APPLICATION": "An agency applied on the creator's behalf — sellers can't review those through the API; "
     "handle it in TikTok Seller Center",
@@ -274,6 +277,11 @@ def _translate_code(status: int, err: dict, request_id: str | None, retry_after:
             help_lines=["Recipients must be creators of the shop's own market — resolve them with "
                         "`boost creator resolve @handle --region <shop region>` (see `boost shops`)"],
         )
+    if code == "INVALID_ARGUMENT" and reason == "UNSUPPORTED" and field in ("status", "type"):
+        return BoostError(
+            text, kind="parameter",
+            help_lines=[f"Unsupported {field} value; see SKILL.md (or this command's --help) for the current list"],
+        )
     if code == "INVALID_ARGUMENT":
         return BoostError(
             text, kind="parameter",
@@ -284,7 +292,10 @@ def _translate_code(status: int, err: dict, request_id: str | None, retry_after:
     if code == "RESOURCE_VERSION_CONFLICT":
         return BoostError(text, kind="parameter", help_lines=["Changed meanwhile — read it again, then retry the change"])
     if code == "CHANNEL_NOT_AVAILABLE":
-        hint = _CHANNEL_HINTS.get(reason) or "This shop's market does not support this feature; authorizing won't help, don't retry"
+        if field == "shop_region" and reason == "REGION_NOT_SUPPORTED":
+            hint = "Authorization links aren't available for this market — bind the shop in the Kaloboost web console"
+        else:
+            hint = _CHANNEL_HINTS.get(reason) or "This shop's market does not support this feature; authorizing won't help, don't retry"
         return BoostError(text, kind="access", help_lines=[hint])
     if code == "TEMPLATE_NOT_APPROVED":
         if str(field or "").startswith(_CONTENT_ROOTS) or reason in _CONTENT_HINTS:

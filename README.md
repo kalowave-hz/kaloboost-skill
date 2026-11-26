@@ -1,6 +1,6 @@
 # kaloboost-skill
 
-Agent skill for [Kaloboost](https://www.kaloboost.com) — a TikTok Shop seller's creator outreach: bound shops, creator lookup, sending and canceling TikTok DMs / target invitations, per-creator results, chatting with creators, collaborations, free samples (including approving / rejecting sample applications) and the content posted for them, affiliate orders and attribution, change events and webhooks.
+Agent skill for [Kaloboost](https://www.kaloboost.com) — a TikTok Shop seller's creator outreach and shop operations: bound shops, shop authorization links, creator lookup, sending and canceling TikTok DMs / target invitations, per-creator results, chatting with creators, collaborations, free samples (including approving / rejecting sample applications) and the content posted for them, affiliate orders and attribution, full shop orders and returns, change events and webhooks.
 
 The skill bundles a zero-dependency CLI (`boost`, Python 3.11+ stdlib only). Installing the skill is all it takes: the agent runs the CLI straight from the skill directory. It covers every endpoint of the Kaloboost OpenAPI v1.
 
@@ -13,8 +13,7 @@ npx skills add kalowave-hz/kaloboost-skill               # project-level
 npx skills add kalowave-hz/kaloboost-skill -g            # global
 ```
 
-The repository is private: installing and the upgrade check use your git credentials for GitHub
-(e.g. `gh auth login && gh auth setup-git`) and need read access to `kalowave-hz/kaloboost-skill`.
+The repository is public — installing and the upgrade check do not require GitHub authentication.
 
 ## Configure
 
@@ -38,8 +37,7 @@ Optional settings:
 | endpoint (default `https://open.kaloboost.com/openapi/v1`) | `KALOBOOST_BASE_URL` | `--env prod\|test` or `--base-url <URL>` |
 | upgrade notice | `KALOBOOST_NO_UPDATE_CHECK=1` | `--update-check off` |
 
-The upgrade notice compares the CLI version with the newest tag on GitHub (`git ls-remote`, with your git
-credentials) in a detached background process and prints a one-line hint to stderr at most once an hour.
+The upgrade notice compares the CLI version with the newest tag on GitHub (`git ls-remote`) in a detached background process and prints a one-line hint to stderr at most once an hour.
 
 ## Usage
 
@@ -77,6 +75,9 @@ Output is token-efficient TOON; add `--json` for raw JSON. Lists are cursor-page
 | `boost sample review` | Approve / reject a pending sample application on TikTok (`--yes`) |
 | `boost content list` / `get` | Creator videos/lives of a shop with metrics |
 | `boost order list` | Affiliate orders by order time (≤90-day window) |
+| `boost shop-order list` | All orders of a shop with SLA deadlines and payment totals (≤90-day window) |
+| `boost shop-return list` | Shop returns, refunds, replacements, and seller to-dos (`--limit 10-50`) |
+| `boost shop-auth create` | Generate a one-time TikTok Shop authorization link (`--region` or `--shop`) |
 | `boost attribution list` / `get` | Affiliate attribution per order line |
 | `boost event list` | Change events of a shop (kept 30 days) |
 | `boost webhook list` / `create` / `update` / `rotate-secret` / `test` / `replay` | Event push endpoints (`--yes` for changes) |

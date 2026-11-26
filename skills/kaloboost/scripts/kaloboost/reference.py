@@ -15,7 +15,7 @@ from .config import DEFAULT_BASE_URL, Config
 
 DESCRIPTION = (
     "Kaloboost creator outreach for TikTok Shop sellers — shops, creator lookup, outreach tasks "
-    "(read, send, cancel), creator chat, collaborations, samples, content, affiliate orders, change events, webhooks"
+    "(read, send, cancel), creator chat, collaborations, samples, content, affiliate orders, shop orders and returns, change events, webhooks"
 )
 
 # (command, what) — the `what` column is deliberately terse; details live in --help
@@ -51,7 +51,10 @@ COMMAND_TABLE = [
     ("boost sample review <id> --decision", "approve / reject a PENDING sample application on TikTok [write, --yes]"),
     ("boost content list", "creator videos/lives of a shop with metrics; --creator --published-from"),
     ("boost content get <id>", "one video/live: sample & collaboration links, metrics"),
-    ("boost order list", "affiliate orders by order time; --from --to (≤90 days)"),
+    ("boost order list", "affiliate orders only, by order time; --from --to (≤90 days)"),
+    ("boost shop-order list", "all orders of a shop: status, ship-by deadline, buyer paid; --from|--updated-from --status"),
+    ("boost shop-return list", "returns / refunds of a shop, seller to-dos; --status --type --order (--limit 10-50)"),
+    ("boost shop-auth create", "authorization link for the shop owner: new shop --region, re-authorize --shop"),
     ("boost attribution list", "affiliate attribution per order line; --creator --order --since"),
     ("boost attribution get <id>", "one attribution record: amounts, settlement"),
     ("boost event list", "change events (outreach, collab, sample, chat message); --types --since"),

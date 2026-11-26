@@ -21,7 +21,7 @@ TOOLS = {
 # model read arbitrary local files, and positional `ids` already covers its use.
 HIDDEN_FLAGS = {"json", "file"}
 # Commands that change state upstream. Those with --yes return a dry run until yes=true.
-WRITES = {c.path for c in COMMANDS if c.flag("--yes") or c.flag("--idempotency-key")} | {"outreach upload-image"}
+WRITES = {c.path for c in COMMANDS if c.flag("--yes") or c.flag("--idempotency-key")} | {"outreach upload-image", "shop-auth create"}
 DESTRUCTIVE = {"outreach cancel", "webhook update", "webhook rotate-secret", "sample review"}
 
 

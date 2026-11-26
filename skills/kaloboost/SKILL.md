@@ -6,21 +6,23 @@ description: >
   cancel outreach, look up creators by handle (email, followers, GMV), save templates, track
   outreach progress and per-creator results, read and reply to creator chats (TikTok Shop
   站内信), collaboration status, free samples and approving / rejecting sample applications,
-  creator videos and metrics, affiliate orders and
-  commission, change events and webhooks — 达人建联、发私信/定向邀约、建联进度、取消建联、
-  达人聊天/站内信收发、合作状态、寄样/申样、审核申样、达人视频、联盟订单、佣金归因、事件推送.
+  creator videos and metrics, affiliate orders and commission, full shop orders and SLA deadlines,
+  shop returns / refunds / replacements, generating TikTok Shop authorization links, change events
+  and webhooks — 达人建联、发私信/定向邀约、建联进度、取消建联、达人聊天/站内信收发、合作状态、
+  寄样/申样、审核申样、达人视频、联盟订单、佣金归因、店铺全量订单与超时预警、退货/退款/换货、
+  生成绑店授权链接、事件推送.
   Runs via the bundled `boost` CLI (Python, zero install); use it even if the user never
   says "kaloboost".
 ---
 
 # Kaloboost creator outreach (`boost`)
 
-Kaloboost is the seller-side creator-outreach tool for TikTok Shop. This skill works on the
-Kaloboost data of the company that owns the API key: its bound shops, outreach, collaborations,
-chats with creators, samples, content, affiliate orders, events. Most commands read. The `[write]`
-commands send messages to real creators, approve / reject their sample applications, or change
-webhook settings — see "Writes" below before
-using them.
+Kaloboost is the seller-side creator-outreach and shop operations tool for TikTok Shop. This skill
+works on the Kaloboost data of the company that owns the API key: its bound shops, outreach,
+collaborations, chats with creators, samples, content, affiliate orders, full shop orders and
+returns, shop authorization links, and events. Most commands read. The `[write]` commands send
+messages to real creators, approve / reject their sample applications, or change webhook settings —
+see "Writes" below before using them.
 
 ## Run
 
@@ -97,7 +99,10 @@ names what the account still needs) — another credential won't fix them.
 | `boost sample contents <id>` | videos/lives posted for a sample: views, likes, orders |
 | `boost sample review <id> --decision APPROVE\|REJECT` | `[write]` approve / reject a `PENDING` sample application on TikTok |
 | `boost content list` / `get <id>` | creator videos/lives of a shop with metrics; --creator --published-from |
-| `boost order list` | affiliate orders by order time; --from --to (≤90 days) |
+| `boost order list` | affiliate orders only (`orders` too), by order time; --from --to (≤90 days) |
+| `boost shop-order list` | all orders of a shop (not only affiliate): status, ship-by deadline, buyer paid; --from\|--updated-from --status (≤90 days) |
+| `boost shop-return list` | returns / refunds / replacements of a shop, seller to-dos and deadlines; --status --type --order (--limit 10-50) |
+| `boost shop-auth create` | authorization link for the shop owner: bind a new shop (--region) or re-authorize a bound one (--shop) |
 | `boost attribution list` / `get <id>` | affiliate attribution per order line; --creator --order --since |
 | `boost event list` | change events (outreach, collab, sample, new chat message); --types --since |
 | `boost webhook list` | push endpoints for change events |
@@ -255,10 +260,48 @@ submits that decision to TikTok in real time — it is a `[write]` and **can't b
   `boost sample get <id>` before anything else.
 - Limit: 5 reviews per second per key.
 
+## Shop orders, returns, and authorization links
+
+Three separate order-related commands — pick the right one:
+
+- `boost order list` (alias `orders`) — **affiliate orders only** (creator-attributed orders and commission).
+- `boost shop-order list` (alias `shop-orders`) — **all orders of a shop** (not only affiliate), with SLA deadlines, fulfillment, cancellation, and payment totals.
+- `boost shop-return list` (alias `shop-returns`) — **returns, refunds, replacements, and exchanges** of a shop, with seller to-dos (`seller_actions`) and deadlines.
+
+### Shop orders & returns
+
+- **Availability & scopes**: unlike most capabilities (which do not depend on TikTok scopes), `SHOP_ORDERS` requires both a supported market (`US`, `ID`, `TH`, `MY`, `VN`, `JP`; `PH` is not yet supported) and the TikTok order/return scopes. `SCOPE_MISSING` or `SHOP_NOT_API_AUTHORIZED` means ask the shop owner to re-authorize using `boost shop-auth create --shop <shop_id>`.
+- **Serial calls & scheduling**: page one shop serially (don't issue concurrent pages for the same shop). For multi-shop daily reports, query shops one by one and avoid scheduling right on the top of the hour (`:00`) to reduce `429` (`CHANNEL_RATE_LIMITED` / `server_capacity`).
+- **Daily report day boundaries**: convert the shop's local calendar day using `time_zone` from `boost shops` (e.g. Indonesia = `Asia/Jakarta` UTC+7; US = `America/Los_Angeles`).
+- **GMV & unit counts**: report both `payment.sub_total` (product GMV; US excludes tax, cross-border includes VAT) and `payment.total_amount` (buyer paid) directly from TikTok — do not recompute from formulas. Exclude `UNPAID` / `CANCELLED` and `is_sample_order`, `is_refundable_sample`, `is_replacement_order`, `is_exchange_order`. Unit count is the number of `line_items` (one item per line), which differs from affiliate `order list`'s `items[].quantity`.
+- **SLA / overdue warnings**: only check `fulfillment_type = FULFILLMENT_BY_SELLER`, exclude `shipping_type` in `{TIKTOK_DIGITAL, IN-STORE PICKUP}`, and skip orders with `null` deadlines:
+  - At risk / overdue to ship: `status` in `{AWAITING_SHIPMENT, PARTIALLY_SHIPPING}` against `deadlines.ship_sla_at` (for partial shipments, `TO_FULFILL` lines use `ship_sla_at` and `PROCESSING` lines use `collect_sla_at`).
+  - At risk / overdue for carrier pickup: `status = AWAITING_COLLECTION` against `min(collect_sla_at, pick_up_cut_off_at)` when present.
+  - Auto-cancel risk: check `auto_cancel_if_unshipped_at` / `auto_cancel_if_uncollected_at`.
+  - Pending buyer cancellation requests: query with `--buyer-cancel-requested true` (response deadline is not in the order payload; estimate ~24h conservatively).
+- **Returns grouping & counting**: count only the latest record per chain (`channel_next_return_id` is `null`). Group statuses as:
+  - *Seller action needed*: `RETURN_OR_REFUND_REQUEST_PENDING`, `REPLACEMENT_REQUEST_PENDING`, `EXCHANGE_REQUEST_PENDING`, `BUYER_SHIPPED_ITEM` (alert when `seller_actions` has a `deadline` approaching).
+  - *Waiting on buyer*: `AWAITING_BUYER_SHIP`, `AWAITING_BUYER_RESPONSE`.
+  - *Refund approved / completed*: `RETURN_OR_REFUND_REQUEST_SUCCESS` → `…_COMPLETE`; `REPLACEMENT_REQUEST_REFUND_SUCCESS` and `EXCHANGE_REQUEST_REFUND_SUCCESS` are terminal.
+  - *Replacement / exchange approved (new order to ship)*: `REPLACEMENT_REQUEST_COMPLETE`, `EXCHANGE_REQUEST_COMPLETE` (the new `is_replacement_order` / `is_exchange_order` order appears in SLA checks).
+  - *Rejected* (not terminal — buyer may open arbitration, check `arbitration_status`): `REFUND_OR_RETURN_REQUEST_REJECT`, `REJECT_RECEIVE_PACKAGE`, `REPLACEMENT_REQUEST_REJECT`.
+  - *Canceled*: `RETURN_OR_REFUND_REQUEST_CANCEL`, `REPLACEMENT_REQUEST_CANCEL`, `EXCHANGE_REQUEST_CANCEL`.
+- `boost shop-return list` accepts `--limit 10-50` (default 20), and can omit the time window when `--order <channel_order_id>` is passed. Use `return_shipping.tracking_number` only for tracking return arrival.
+
+### Shop authorization links (`boost shop-auth create`)
+
+Generates a TikTok Shop authorization URL (`--region <CC>` to bind a new shop; `--shop <shop_id>` to re-authorize a bound shop, no `--region` needed). Limit: 10 links per 60 seconds; not idempotent.
+
+- **Single-use, 2-hour expiry**: send only to the shop owner, one link per shop. The owner must **complete** authorization before `expires_at` (not just open the page). Any callback with an auth code — even if binding fails — consumes the link; canceling on TikTok's page does not. If a link expires or fails, generate a new one rather than reusing it.
+- **Multi-shop accounts**: one authorization binds only the **first** shop TikTok returns. To bind additional shops under the same TikTok seller account, use the Kaloboost web console (or contact Kaloboost). Re-authorizing an already-bound shop with `--shop` matches that specific shop.
+- **Owner redirect & error codes**: after authorizing, the browser redirects to Kaloboost's bind-shop page (`?error=<code>`). That page requires a Kaloboost login, so the owner may not see the result. Possible error codes: `SHOP_COUNT_LIMIT` (quota full at bind time), `SHOP_AUTH_OTHER_COMPANY` (already bound to another company), `SHOP_AUTH_COOKIE_DIFF` (wrong shop authorized for `--shop`), `OPENAPI_LINK_ALREADY_USED` (replayed/concurrent click), `OPENAPI_LINK_DISABLED` (feature paused), `SHOP_BIND_REGION_NOT_OPEN`, `BIND_FAILED`. An **expired** link fails silently without an explicit error.
+- **How to confirm completion**: for a new shop, check `boost shops`. For re-authorization, rerun the previously failing call (e.g. `boost shop-order list` over a short window) — `SHOP_ORDERS` in `boost shops` can already appear when scopes are unknown or a token expired, so it is not proof of re-authorization. Poll roughly every 30s and stop 10 minutes after `expires_at`.
+- **Risk & side effects**: TikTok's authorization page shows only the app name, not the company — confirm the owner before sending, as once bound the shop's orders and returns are immediately visible to this company's key holders and enabled agents. Binding or re-authorizing switches the caller's active shop in the Kaloboost web console and assigns the shop to the caller. Opening the link does **not** sign the owner into Kaloboost.
+
 ## Conventions
 
 - Shop-level commands need `--shop <shop_id>` from `boost shops` (or a saved default)
-- Lists take `--limit` (1-100) `--cursor` `--all`. To page, run the exact command in the `More:`
+- Lists take `--limit` (1-100; exception: `shop-return list` takes 10-50, default 20) `--cursor` `--all`. To page, run the exact command in the `More:`
   hint — a cursor only works with the same `--shop`/`--since`/`--from`/`--to` it was issued with,
   and expires after 24h. `--all` follows cursors for up to 20 pages
 - `--since` / `--from` / `--to` take `30m`, `24h`, `7d`, `yyyy-MM-dd` or ISO 8601 UTC
@@ -291,7 +334,9 @@ submits that decision to TikTok in real time — it is a `[write]` and **can't b
   SAMPLE_COOPERATED > NOT_COOPERATED); `outreach_result` is this one invitation (null for DMs).
   Times before 2026-09-11 can be ~8h late.
 - **Samples**: no status is final (COMPLETED/CANCELED/EXPIRED can still change) — `curr_status`
-  is the truth. `delivered_time` is always null today. `--since` can miss some changes; for a
+  is the truth. `EXPIRED`, `REJECTED`, and `CANCELED` mean the application never shipped
+  (`fulfillment.channel_main_order_id` is `0` and `shipped_time` is null) — they are not shipped
+  samples. `delivered_time` is always null today. `--since` can miss some changes; for a
   complete picture list without `--since`. `sample get` on an old id may return a new merged id.
 - **Sample content metrics** are snapshots, often stale for older posts; don't sum across calls.
 - **Affiliate orders** are read live from TikTok (only US/ID/TH/MY/VN/PH/SG/JP shops that authorized

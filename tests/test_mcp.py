@@ -166,3 +166,30 @@ def test_real_stdio_process(env, mode):
             assert result.structured_content == {"data": {"shop_regions": ["US"]}}
 
     anyio.run(check)
+
+
+def test_shop_order_tools(env):
+    assert {"shop_order_list", "shop_return_list", "shop_auth_create"} <= set(TOOLS)
+    env.responses["/shop-orders"] = page([{"channel_order_id": "o1"}], cursor="c9")
+    env.responses["/shop-authorization-links"] = {"data": {"authorization_url": "https://x", "expires_at": "t"}}
+
+    async def check():
+        async with Client(create_server()) as client:
+            tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+            limit = tools["shop_return_list"].input_schema["properties"]["limit"]
+            assert (limit["minimum"], limit["maximum"], limit["default"]) == (10, 50, 20)
+            assert tools["shop_order_list"].annotations.read_only_hint
+            assert not tools["shop_auth_create"].annotations.read_only_hint
+            assert not tools["shop_auth_create"].annotations.destructive_hint
+            result = await client.call_tool("shop_order_list", {"shop": "s", "status": "DELIVERED"})
+            assert result.structured_content == {"data": {"data": [{"channel_order_id": "o1"}], "next_cursor": "c9"}}
+            result = await client.call_tool("shop_auth_create", {"shop": "806"})
+            assert not result.is_error
+            assert result.structured_content == {"data": {"authorization_url": "https://x", "expires_at": "t"}}
+            bad = await client.call_tool("shop_return_list", {"shop": "s", "limit": 9})
+            assert bad.is_error
+
+    anyio.run(check)
+    assert [r[1] for r in env.requests] == ["/shop-orders", "/shop-authorization-links"]
+    assert env.requests[0][2]["status"] == "DELIVERED"
+    assert env.requests[1][4] == {"shop_id": "806"}
