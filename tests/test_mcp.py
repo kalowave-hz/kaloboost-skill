@@ -211,3 +211,31 @@ def test_coupon_promotion_diagnose_tools(env):
 
     anyio.run(check)
     assert env.requests[0][2]["status"] == "ONGOING"
+
+
+def test_campaign_open_collab_tools(env):
+    names = {"campaign_groups", "campaign_list", "campaign_get", "campaign_registered", "campaign_counts",
+             "open_collab_settings", "open_collab_sample_rules"}
+    assert names <= set(TOOLS)
+    env.responses["/campaign-groups"] = page([{"channel_campaign_group_id": "1"}], cursor="g2")
+    env.responses["/campaigns/7400000000000000101"] = {"data": {"channel_campaign_id": "7400000000000000101"}}
+
+    async def check():
+        async with Client(create_server()) as client:
+            tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+            for name in names:
+                assert tools[name].annotations.read_only_hint, name  # everything in WP-24 is read-only
+            result = await client.call_tool("campaign_groups", {"shop": "s", "invited_only": True})
+            assert result.structured_content == {"data": {"data": [{"channel_campaign_group_id": "1"}],
+                                                          "next_cursor": "g2"}}
+            got = await client.call_tool("campaign_get", {"shop": "s", "CAMPAIGN_ID": "7400000000000000101",
+                                                          "type": "PRODUCT"})
+            assert not got.is_error
+            bad = await client.call_tool("campaign_get", {"shop": "s", "CAMPAIGN_ID": "1", "type": "UNMAPPED"})
+            assert bad.is_error
+            bad = await client.call_tool("open_collab_sample_rules", {"shop": "s", "products": "a%2F"})
+            assert bad.is_error
+
+    anyio.run(check)
+    assert env.requests[0][2]["invited_only"] == "true"
+    assert env.requests[1][2] == {"shop_id": "s", "type": "PRODUCT"}

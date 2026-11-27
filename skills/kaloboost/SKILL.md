@@ -7,10 +7,11 @@ description: >
   outreach progress and per-creator results, read and reply to creator chats (TikTok Shop
   站内信), collaboration status, free samples and approving / rejecting sample applications,
   creator videos and metrics, affiliate orders and commission, full shop orders and SLA deadlines,
-  shop returns / refunds / replacements, generating TikTok Shop authorization links, change events
+  shop returns / refunds / replacements, coupons and promotions, TikTok platform campaigns and
+  open collaboration / free-sample rules, generating TikTok Shop authorization links, change events
   and webhooks — 达人建联、发私信/定向邀约、建联进度、取消建联、达人聊天/站内信收发、合作状态、
   寄样/申样、审核申样、达人视频、联盟订单、佣金归因、店铺全量订单与超时预警、退货/退款/换货、
-  生成绑店授权链接、事件推送.
+  平台活动（Campaign）报名资格与已报名活动、公开合作设置与免费样品规则、生成绑店授权链接、事件推送.
   Runs via the bundled `boost` CLI (Python, zero install); use it even if the user never
   says "kaloboost".
 ---
@@ -106,6 +107,9 @@ names what the account still needs) — another credential won't fix them.
 | `boost coupon list` / `get <id>` | seller coupons of a shop: status, claim/redemption window, discount, usage; read-only (create in Seller Center) |
 | `boost promotion list` / `get <id>` | seller promotions of a shop: type, status, window, activity prices |
 | `boost product diagnose` | TikTok listing diagnoses of 1-200 products: quality, issues, suggestions |
+| `boost campaign groups` / `list --group <id>` / `get <id> --type` | TikTok platform campaigns a shop can see: invited, eligibility, benefits, fees; read-only (register in Seller Center) |
+| `boost campaign registered` / `counts` | platform campaigns the shop registered for: status, registration / review counts |
+| `boost open-collab settings` / `sample-rules` | open collaboration auto-add + default commission; free-sample rules of 1-200 products; read-only |
 | `boost attribution list` / `get <id>` | affiliate attribution per order line; --creator --order --since |
 | `boost event list` | change events (outreach, collab, sample, new chat message); --types --since |
 | `boost webhook list` | push endpoints for change events |
@@ -322,6 +326,41 @@ Three read-only views of a shop's seller marketing tools, live from TikTok (noth
 - **Missing ids**: a requested id that is absent from the response does not exist or does not belong to this shop — it is not an error. Products in `DELETED`/`FREEZE`/`DRAFT`/`SELLER_DEACTIVATED` still answer their diagnoses.
 - **`listing_quality` is US-only**: products in Indonesia, Thailand, Malaysia (and other non-US markets) answer `null` — report it as "not scored", not as a zero/bad score.
 - **Reading issues**: each entry under `diagnoses[]` is one field (`IMAGE`, `TITLE`, …) with `issues[]` (machine `code` + human `how_to_solve`, often in the shop's local language) and `suggestion` (`seo_words` / `smart_texts`).
+
+## Platform campaigns and open collaboration
+
+Read-only views, live from TikTok (nothing stored in Kaloboost). **You can't register for or leave a
+campaign, and can't change open collaboration settings or sample rules here** — those are done in
+Seller Center; never promise them.
+
+- `boost campaign groups` (alias `campaigns`) — TikTok **platform** campaign groups (not the seller's own promotions — those are `boost promotion`). Takes a few seconds per page; don't loop it.
+- `boost campaign list --group <channel_campaign_group_id>` — campaigns of one group, with the list-level eligibility answer.
+- `boost campaign get <channel_campaign_id> --type <type>` — one campaign; `--type` is the `type` the list returned.
+- `boost campaign registered` / `boost campaign counts` — campaigns the shop registered for, and their counts.
+- `boost open-collab settings` (alias `open-collaboration`) — auto-add products to open collaboration, default commission.
+- `boost open-collab sample-rules --products <id,id,...>` — free-sample rules of 1-200 products.
+
+### Reading campaigns right
+
+- **`null` = TikTok gave no answer.** TikTok omits booleans and counts it has no conclusion on; a `null` `is_invited`, `has_joined`, `is_eligible`, `is_registration_available` or count is **unknown — never report it as false, 0 or "may register"**. Explicit `false` / `0` / `[]` are real answers.
+- **Can the shop register?** Only `registration_summary` (list: `is_eligible`, `is_registration_available`, `registration_block_reason.code`/`message`) or the detail's eligibility objects (`registration_availability` / `shop_eligibility` for PRODUCT / SHOP, `registration_summary` for LIVESTREAM / SHORT_VIDEO) answer it. Being invited (`is_invited`), the campaign `status`, or the registration phase (`registration_status` / `registration_period.status`) are **not** eligibility; a missing eligibility object is not "allowed".
+- **Detail needs a known type**: a campaign listed with `type` `UNMAPPED` or `null` can't be fetched with `campaign get` yet (raw value in `channel_type`). An id that doesn't exist, isn't visible to the shop, or is passed with the wrong `--type` answers 404 `RESOURCE_NOT_FOUND`.
+- **Raw sub-objects**: detail objects such as `benefits`, `fees`, `participation_rules`, `registration_availability`, `shop_participation`, `agreement`, `participation_requirements` are TikTok's own sub-objects forwarded unchanged (TikTok key names, RFC 3339 times) — their shape may change; read them, don't assume fields.
+- **Times** (`*_period.start_at`/`end_at`, `query_time`) are ISO 8601 UTC. A `null` period edge is unknown, not unbounded.
+- **Paging**: only a null `next_cursor` ends a list — an empty page can still carry a cursor; follow the `More:` hint or `--all`.
+- **`campaign counts`**: `all_count`, `upcoming_count`, `active_count`, `ended_count` are independent and need not add up; `active` spans registration opening to campaign end; `null` = not available, not 0.
+- **Registered stats**: `registered_count` includes rejected and expired; `approved_count` is not "benefit live"; `scheduled_count` must not be added to `approved_count`; `under_review_count` is TikTok review, not "waiting for the seller".
+
+### Reading open collaboration right
+
+- **`commission_rate`** is a ratio string: `"0.1000"` = 10%. `enabled=true` means existing non-affiliate products were added once and new products join automatically; `false` means new products don't (already added ones stay).
+- **Sample rules**: a product absent from `rules` is listed in `products_not_returned` — it has **no free-sample rule, does not exist, or is not in this shop** (TikTok doesn't say which); it is not an error, and an all-missing request still answers 200 with empty `rules`. `is_sample_time_unlimited=true` means any time (no `start_time`/`end_time`); thresholds (`minimum_follower_count`, `minimum_gmv` — TikTok's raw integer, `avg_ec_video_views`, `category_ids`, `predicted_fulfillment_rank`) are minimums a creator must meet.
+
+### Availability & scopes
+
+- Campaigns are part of `SHOP_PROMOTIONS` and need the TikTok scope `seller.promotion.info`. US / JP / PH apps don't carry it, so shops there answer 422 `SCOPE_MISSING` — tell the user campaigns aren't available for that shop's market (re-authorizing won't add a scope the app doesn't have).
+- Open collaboration is `OPEN_COLLABORATION` and needs `seller.affiliate_collaboration.read`, which nearly every market's app carries — **US shops included**. A 422 `SCOPE_MISSING` there means ask the shop owner to re-authorize: `boost shop-auth create --shop <shop_id>`.
+- `boost shops` lists both keys per shop.
 
 ## Conventions
 

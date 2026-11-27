@@ -1245,3 +1245,236 @@ def test_product_diagnose_validates_locally(capsys, env):
     code, out = run(capsys, "product", "diagnose", "--shop", "s", "--products", many)
     assert code == 2
     assert env.requests == []
+
+
+# --- platform campaigns / open collaboration (WP-24 batch 2) -------------------
+
+CAMPAIGN_GROUP = {
+    "channel_campaign_group_id": "7400000000000000001", "title": "12.12 Mega Sale", "type": "NORMAL",
+    "status": "ONGOING", "region": "ID", "is_invited": None, "campaign_count": 3,
+    "campaign_period": {"start_at": "2026-12-01T00:00:00.000Z", "end_at": "2026-12-13T00:00:00.000Z"},
+    "campaigns": [],
+}
+
+CAMPAIGN = {
+    "channel_campaign_id": "7400000000000000101", "title": "12.12 Product", "type": "PRODUCT", "status": "ACTIVE",
+    "is_invited": True, "has_joined": None,
+    "registration_period": {"start_at": "2026-11-20T00:00:00.000Z", "end_at": "2026-12-05T00:00:00.000Z"},
+    "registration_summary": {"is_eligible": False, "is_registration_available": False,
+                             "registration_block_reason": {"code": "INELIGIBLE", "message": "no"}},
+}
+
+CAMPAIGN_UNMAPPED = {"channel_campaign_id": "7400000000000000102", "title": "x", "type": "UNMAPPED",
+                     "channel_type": "NEW_KIND", "registration_summary": None}
+
+CAMPAIGN_DETAIL = dict(
+    CAMPAIGN, region="ID", registration_period={"status": "OPEN", "end_at": "2026-12-05T00:00:00.000Z"},
+    registration_availability={"is_available": False, "reasons": [{"code": "INELIGIBLE"}]},
+    benefits=[{"type": "TRAFFIC"}], fees=None,
+)
+
+
+def test_campaign_resolve_and_aliases():
+    from kaloboost.cli import _resolve
+
+    assert _resolve(["campaign", "groups"])[0].path == "campaign groups"
+    assert _resolve(["campaigns"])[0].path == "campaign groups"
+    assert _resolve(["campaigns", "--shop", "s"])[0].path == "campaign groups"
+    assert _resolve(["campaign", "list"])[0].path == "campaign list"
+    assert _resolve(["campaign", "get", "1"])[0].path == "campaign get"
+    assert _resolve(["campaign", "registered"])[0].path == "campaign registered"
+    assert _resolve(["campaign", "counts"])[0].path == "campaign counts"
+    assert _resolve(["open-collab"])[0].path == "open-collab settings"
+    assert _resolve(["open-collaboration", "sample-rules"])[0].path == "open-collab sample-rules"
+
+
+def test_campaign_groups_query_table_and_cursor(capsys, env):
+    env.responses["/campaign-groups"] = page([CAMPAIGN_GROUP], cursor="G2")
+    code, out = run(capsys, "campaign", "groups", "--shop", "s", "--name", " mega ", "--invited-only",
+                    "--registration", "unregistered", "--locale", "id-ID")
+    assert code == 0, out
+    method, path, query, _, _ = env.requests[0]
+    assert (method, path) == ("GET", "/campaign-groups")
+    assert query == {"shop_id": "s", "name": "mega", "invited_only": "true", "registration": "UNREGISTERED",
+                     "locale": "id-ID", "limit": "20"}
+    assert ("campaign_groups[1]{channel_campaign_group_id,title,type,status,region,is_invited,campaign_count,"
+            "start_at,end_at}:") in out
+    assert '"7400000000000000001",12.12 Mega Sale,NORMAL,ONGOING,ID,null,3' in out  # null stays null
+    # the continuation repeats every filter the cursor is bound to
+    assert ("`boost campaign groups --shop s --name mega --invited-only --registration UNREGISTERED "
+            "--locale id-ID --cursor G2`") in out
+
+
+def test_campaign_groups_validates_locally(capsys, env):
+    for argv in (["--invited-only", "--pending-only"], ["--registration", "BOTH"],
+                 ["--registration", "REGISTERED,UNREGISTERED"], ["--locale", "en_US"], ["--name", "x" * 101]):
+        code, out = run(capsys, "campaign", "groups", "--shop", "s", *argv)
+        assert code == 2, (argv, out)
+    assert env.requests == []
+
+
+def test_campaign_groups_empty_page_with_cursor_is_not_the_end(capsys, env):
+    env.responses["/campaign-groups"] = page([], cursor="G2")
+    code, out = run(capsys, "campaign", "groups", "--shop", "s")
+    assert code == 0
+    assert "campaign_groups: 0 results" in out
+    assert "an empty page is not the end" in out and "--cursor G2`" in out
+
+
+def test_campaign_groups_all_follows_cursor_past_empty_page(capsys, env):
+    env.responses["/campaign-groups"] = [page([], cursor="G2"), page([CAMPAIGN_GROUP])]
+    code, out = run(capsys, "campaign", "groups", "--shop", "s", "--all", "--json")
+    assert code == 0
+    assert json.loads(out) == {"data": [CAMPAIGN_GROUP], "next_cursor": None}
+    assert [r[2].get("cursor") for r in env.requests] == [None, "G2"]
+
+
+def test_campaign_list_query_and_table(capsys, env):
+    env.responses["/campaigns"] = page([CAMPAIGN, CAMPAIGN_UNMAPPED])
+    code, out = run(capsys, "campaign", "list", "--shop", "s", "--group", "7400000000000000001",
+                    "--pending-only", "--eligibility", "eligible", "--types", "shop, product,SHOP")
+    assert code == 0, out
+    method, path, query, _, _ = env.requests[0]
+    assert (method, path) == ("GET", "/campaigns")
+    assert query == {"shop_id": "s", "campaign_group_id": "7400000000000000001", "pending_registration_only": "true",
+                     "eligibility": "ELIGIBLE", "types": "SHOP,PRODUCT", "limit": "20"}
+    assert ("campaigns[2]{channel_campaign_id,title,type,status,is_invited,has_joined,eligible,can_register,"
+            "block_reason,registration_end_at}:") in out
+    assert '"7400000000000000101",12.12 Product,PRODUCT,ACTIVE,true,null,false,false,INELIGIBLE' in out
+    assert "1 campaigns have type UNMAPPED or null — their detail can't be fetched yet" in out
+
+
+def test_campaign_list_validates_locally(capsys, env):
+    code, out = run(capsys, "campaign", "list", "--shop", "s")
+    assert code == 2 and "--group" in out
+    for argv in (["--group", "0"], ["--group", "01"], ["--group", "9223372036854775808"], ["--group", "abc"],
+                 ["--group", "1", "--types", "PRODUCT,VIDEO"], ["--group", "1", "--eligibility", "SOME"]):
+        code, out = run(capsys, "campaign", "list", "--shop", "s", *argv)
+        assert code == 2, (argv, out)
+    assert env.requests == []
+
+
+def test_campaign_get(capsys, env):
+    env.responses["/campaigns/7400000000000000101"] = {"data": CAMPAIGN_DETAIL, "request_id": "r"}
+    code, out = run(capsys, "campaign", "get", "7400000000000000101", "--shop", "s", "--type", "product")
+    assert code == 0, out
+    method, path, query, _, _ = env.requests[0]
+    assert (method, path) == ("GET", "/campaigns/7400000000000000101")
+    assert query == {"shop_id": "s", "type": "PRODUCT"}
+    assert "OPEN" in out  # registration phase from registration_period.status
+    assert "eligibility:" in out and "registration_availability:" in out
+    assert "add --json for benefits" in out and "fees" not in out.split("add --json for")[1].split("\n")[0]
+    assert "only possible in Seller Center" in out
+
+
+def test_campaign_get_needs_known_type(capsys, env):
+    for argv in ([], ["--type", "UNMAPPED"], ["--type", "VIDEO"]):
+        code, out = run(capsys, "campaign", "get", "7400000000000000101", "--shop", "s", *argv)
+        assert code == 2, (argv, out)
+        assert "UNMAPPED or null can't be fetched" in out
+    code, out = run(capsys, "campaign", "get", "a%2Fb", "--shop", "s", "--type", "SHOP")
+    assert code == 2
+    assert env.requests == []
+
+
+def test_campaign_get_not_found(capsys, env):
+    env.responses["/campaigns/7400000000000000101"] = err(404, "RESOURCE_NOT_FOUND")
+    code, out = run(capsys, "campaign", "get", "7400000000000000101", "--shop", "s", "--type", "SHOP")
+    assert code == 1
+
+
+def test_campaign_registered_query_and_table(capsys, env):
+    row = {"channel_campaign_id": "7400000000000000201", "title": "Payday", "type": "SHOP", "status": "ACTIVE",
+           "region": "MY", "registration_statistics": {"registered_count": None, "approved_count": 2,
+                                                       "under_review_count": 0, "rejected_count": 1},
+           "campaign_period": {"end_at": "2026-12-31T00:00:00.000Z"}}
+    env.responses["/registered-campaigns"] = page([row], cursor="R2")
+    code, out = run(capsys, "campaign", "registered", "--shop", "s", "--types", "shop", "--statuses",
+                    "active,upcoming", "--regions", "my, eu", "--name", "pay")
+    assert code == 0, out
+    query = env.requests[0][2]
+    assert query == {"shop_id": "s", "name": "pay", "types": "SHOP", "statuses": "ACTIVE,UPCOMING",
+                     "regions": "MY,EU", "limit": "20"}
+    assert ("registered_campaigns[1]{channel_campaign_id,title,type,status,region,registered,approved,"
+            "under_review,rejected,end_at}:") in out
+    assert '"7400000000000000201",Payday,SHOP,ACTIVE,MY,null,2,0,1' in out
+    assert ("--types SHOP --statuses ACTIVE,UPCOMING --regions MY,EU --cursor R2`") in out
+
+
+def test_campaign_registered_validates_locally(capsys, env):
+    code, out = run(capsys, "campaign", "registered", "--shop", "s", "--statuses", "DEACTIVATED")
+    assert code == 2 and "counted under EXPIRED" in out
+    for argv in (["--regions", "USA"], ["--regions", "US,"], ["--types", ""]):
+        code, out = run(capsys, "campaign", "registered", "--shop", "s", *argv)
+        assert code == 2, (argv, out)
+    assert env.requests == []
+
+
+def test_campaign_counts(capsys, env):
+    env.responses["/registered-campaigns/counts"] = {
+        "data": {"all_count": 5, "upcoming_count": 0, "active_count": None, "ended_count": 4}, "request_id": "r"}
+    code, out = run(capsys, "campaign", "counts", "--shop", "s")
+    assert code == 0, out
+    assert env.requests[0][1:3] == ("/registered-campaigns/counts", {"shop_id": "s"})
+    assert "active_count: null" in out and "upcoming_count: 0" in out
+    assert "need not add up to all_count" in out
+
+
+def test_open_collab_settings(capsys, env):
+    env.responses["/open-collaboration-settings"] = {
+        "data": {"auto_add_product": {"enabled": True, "commission_rate": "0.1000"}}, "request_id": "r"}
+    code, out = run(capsys, "open-collab", "settings", "--shop", "s")
+    assert code == 0, out
+    assert env.requests[0][1:3] == ("/open-collaboration-settings", {"shop_id": "s"})
+    assert "auto_add_product_enabled: true" in out
+    assert '0.1000 = 10%' in out
+    env.responses["/open-collaboration-settings"] = {"data": {"auto_add_product": None}, "request_id": "r"}
+    code, out = run(capsys, "open-collab", "--shop", "s")
+    assert code == 0 and "auto_add_product_enabled: null" in out
+
+
+def test_open_collab_sample_rules(capsys, env):
+    rule = {"channel_product_id": "1729000000000000001", "status": "ONGOING", "sample_quota": 50,
+            "available_quantity": 12, "is_sample_time_unlimited": True, "start_time": None, "end_time": None,
+            "thresholds": {"minimum_follower_count": 1000, "minimum_gmv": 0}}
+    env.responses["/open-collaboration-sample-rules"] = {
+        "data": {"rules": [rule], "products_not_returned": ["1729000000000000002"]}, "request_id": "r"}
+    code, out = run(capsys, "open-collab", "sample-rules", "--shop", "s",
+                    "--products", "1729000000000000002,1729000000000000001,1729000000000000002")
+    assert code == 0, out
+    method, path, query, _, _ = env.requests[0]
+    assert (method, path) == ("GET", "/open-collaboration-sample-rules")
+    assert query == {"shop_id": "s", "product_ids": "1729000000000000002,1729000000000000001"}
+    assert ("sample_rules[1]{channel_product_id,status,sample_quota,available_quantity,start_time,end_time,"
+            "min_followers,min_gmv}:") in out
+    assert '"1729000000000000001",ONGOING,50,12,unlimited,unlimited,1000,0' in out
+    assert "1 of 2 products have a free-sample rule" in out
+    assert "no free-sample rule, does not exist, or not in this shop" in out
+
+
+def test_open_collab_sample_rules_all_missing_and_json(capsys, env):
+    env.responses["/open-collaboration-sample-rules"] = {
+        "data": {"rules": [], "products_not_returned": ["a1"]}, "request_id": "r"}
+    code, out = run(capsys, "open-collab", "sample-rules", "--shop", "s", "--products", "a1")
+    assert code == 0
+    assert "sample_rules: 0 results" in out and "no free-sample rule, does not exist, or not in this shop" in out
+    code, out = run(capsys, "open-collab", "sample-rules", "--shop", "s", "--products", "a1", "--json")
+    assert json.loads(out) == {"rules": [], "products_not_returned": ["a1"]}
+
+
+def test_open_collab_sample_rules_validates_locally(capsys, env):
+    code, out = run(capsys, "open-collab", "sample-rules", "--shop", "s")
+    assert code == 2
+    code, out = run(capsys, "open-collab", "sample-rules", "--shop", "s", "--products", "a%2F")
+    assert code == 2
+    many = ",".join("1737000000000000%03d" % i for i in range(201))
+    code, out = run(capsys, "open-collab", "sample-rules", "--shop", "s", "--products", many)
+    assert code == 2
+    assert env.requests == []
+
+
+def test_campaign_scope_missing_hint(capsys, env):
+    env.responses["/campaign-groups"] = err(422, "CHANNEL_NOT_AVAILABLE", "shop_id", "SCOPE_MISSING")
+    code, out = run(capsys, "campaign", "groups", "--shop", "s")
+    assert code == 1
+    assert "lacks a permission" in out
