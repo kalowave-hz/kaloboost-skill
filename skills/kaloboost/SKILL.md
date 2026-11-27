@@ -306,7 +306,7 @@ Generates a TikTok Shop authorization URL (`--region <CC>` to bind a new shop; `
 Three read-only views of a shop's seller marketing tools, live from TikTok (nothing stored in Kaloboost):
 
 - `boost coupon list` (alias `coupons`) — seller coupons: status, claim window, redemption window, discount, usage.
-- `boost promotion list` (alias `promotions`) — seller promotions (platform activities): type, status, time window, products.
+- `boost promotion list` (alias `promotions`) — seller-created promotions (discounts, flash sales, shipping discounts, bundles, gifts — not TikTok platform campaigns): type, status, time window, products.
 - `boost product diagnose --products <id,id,...>` — TikTok's own listing diagnoses for 1-200 products of a shop.
 
 ### Coupons & promotions
