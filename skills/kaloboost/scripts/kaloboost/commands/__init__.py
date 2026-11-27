@@ -5,12 +5,12 @@ from __future__ import annotations
 from ..core import Command
 from . import (
     account, attribution, chat, collab, content, creator, event, meta, order, outreach, resolve_job, sample,
-    shop_auth, shop_order, webhook,
+    shop_auth, shop_order, shop_promotion, webhook,
 )
 
 COMMANDS: list[Command] = []
 for _mod in (
-    account, creator, resolve_job, outreach, chat, collab, sample, content, order, shop_order, shop_auth, attribution,
+    account, creator, resolve_job, outreach, chat, collab, sample, content, order, shop_order, shop_auth, shop_promotion, attribution,
     event, webhook, meta,
 ):
     COMMANDS.extend(_mod.COMMANDS)
@@ -26,6 +26,8 @@ DEFAULT_SUB = {
     "shop-order": "list",
     "shop-return": "list",
     "shop-auth": "create",
+    "coupon": "list",
+    "promotion": "list",
     "attribution": "list",
     "event": "list",
     "webhook": "list",
@@ -44,6 +46,8 @@ ALIASES = {
     "orders": "order",
     "shop-orders": "shop-order",
     "shop-returns": "shop-return",
+    "coupons": "coupon",
+    "promotions": "promotion",
     "attributions": "attribution",
     "events": "event",
     "webhooks": "webhook",

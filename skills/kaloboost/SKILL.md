@@ -103,6 +103,9 @@ names what the account still needs) — another credential won't fix them.
 | `boost shop-order list` | all orders of a shop (not only affiliate): status, ship-by deadline, buyer paid; --from\|--updated-from --status (≤90 days) |
 | `boost shop-return list` | returns / refunds / replacements of a shop, seller to-dos and deadlines; --status --type --order (--limit 10-50) |
 | `boost shop-auth create` | authorization link for the shop owner: bind a new shop (--region) or re-authorize a bound one (--shop) |
+| `boost coupon list` / `get <id>` | seller coupons of a shop: status, claim/redemption window, discount, usage; read-only (create in Seller Center) |
+| `boost promotion list` / `get <id>` | seller promotions of a shop: type, status, window, activity prices |
+| `boost product diagnose` | TikTok listing diagnoses of 1-200 products: quality, issues, suggestions |
 | `boost attribution list` / `get <id>` | affiliate attribution per order line; --creator --order --since |
 | `boost event list` | change events (outreach, collab, sample, new chat message); --types --since |
 | `boost webhook list` | push endpoints for change events |
@@ -297,6 +300,28 @@ Generates a TikTok Shop authorization URL (`--region <CC>` to bind a new shop; `
 - **Owner redirect & error codes**: after authorizing, the browser redirects to Kaloboost's bind-shop page (`?error=<code>`). That page requires a Kaloboost login, so the owner may not see the result. Possible error codes: `SHOP_COUNT_LIMIT` (quota full at bind time), `SHOP_AUTH_OTHER_COMPANY` (already bound to another company), `SHOP_AUTH_COOKIE_DIFF` (wrong shop authorized for `--shop`), `OPENAPI_LINK_ALREADY_USED` (replayed/concurrent click), `OPENAPI_LINK_DISABLED` (feature paused), `SHOP_BIND_REGION_NOT_OPEN`, `BIND_FAILED`. An **expired** link fails silently without an explicit error.
 - **How to confirm completion**: for a new shop, check `boost shops`. For re-authorization, rerun the previously failing call (e.g. `boost shop-order list` over a short window) — `SHOP_ORDERS` in `boost shops` can already appear when scopes are unknown or a token expired, so it is not proof of re-authorization. Poll roughly every 30s and stop 10 minutes after `expires_at`.
 - **Risk & side effects**: TikTok's authorization page shows only the app name, not the company — confirm the owner before sending, as once bound the shop's orders and returns are immediately visible to this company's key holders and enabled agents. Binding or re-authorizing switches the caller's active shop in the Kaloboost web console and assigns the shop to the caller. Opening the link does **not** sign the owner into Kaloboost.
+
+## Coupons, promotions, and product diagnoses
+
+Three read-only views of a shop's seller marketing tools, live from TikTok (nothing stored in Kaloboost):
+
+- `boost coupon list` (alias `coupons`) — seller coupons: status, claim window, redemption window, discount, usage.
+- `boost promotion list` (alias `promotions`) — seller-created promotions (discounts, flash sales, shipping discounts, bundles, gifts — not TikTok platform campaigns): type, status, time window, products.
+- `boost product diagnose --products <id,id,...>` — TikTok's own listing diagnoses for 1-200 products of a shop.
+
+### Coupons & promotions
+
+- **Availability & scopes**: `SHOP_PROMOTIONS` / `PRODUCT_DIAGNOSIS` need the TikTok scopes `seller.promotion.info` and `serller.product.optimize` (TikTok's own spelling). There is no market list — it is purely per-shop scopes; US/JP/PH apps currently do not carry these scopes, so those shops answer 422 `SCOPE_MISSING`. `SCOPE_MISSING` or `SHOP_NOT_API_AUTHORIZED` means ask the shop owner to re-authorize with `boost shop-auth create --shop <shop_id>`.
+- **Coupons are read-only**: creating or editing a coupon is only possible in Seller Center — never promise to create one.
+- **Expiry checks**: look at `status` together with `claim_end_time` (end of the claim window). A coupon whose `redemption.type` is `RELATIVE` has **no absolute expiry** — buyers redeem within `relative_days` of claiming; only `ABSOLUTE` redemptions have a `redemption.end_time`.
+- **Money**: coupon amounts carry ISO currency (`IDR`/`MYR`/`THB`/`VND`/`PHP`/…); promotion activity prices carry whatever currency TikTok returns, as-is.
+- **Pass-through objects**: a promotion's `discount` configuration and `participation_limit` are raw TikTok sub-objects, forwarded unchanged — do not assume a fixed shape inside them; `UNMAPPED` type/status means TikTok added a value, the raw one is in `channel_type`/`channel_status`.
+
+### Product diagnoses
+
+- **Missing ids**: a requested id that is absent from the response does not exist or does not belong to this shop — it is not an error. Products in `DELETED`/`FREEZE`/`DRAFT`/`SELLER_DEACTIVATED` still answer their diagnoses.
+- **`listing_quality` is US-only**: products in Indonesia, Thailand, Malaysia (and other non-US markets) answer `null` — report it as "not scored", not as a zero/bad score.
+- **Reading issues**: each entry under `diagnoses[]` is one field (`IMAGE`, `TITLE`, …) with `issues[]` (machine `code` + human `how_to_solve`, often in the shop's local language) and `suggestion` (`seo_words` / `smart_texts`).
 
 ## Conventions
 
