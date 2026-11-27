@@ -1548,10 +1548,10 @@ def test_shop_performance_query_and_lag(capsys, env, monkeypatch):
     _freeze_today(monkeypatch)
     env.responses["/shop-performance"] = {"data": dict(SHOP_PERF, latest_available_date="2026-11-20")}
     code, out = run(capsys, "shop-performance", "--shop", "s", "--from", "2026-11-01", "--to", "2026-11-25",
-                    "--granularity", "day", "--currency", "usd")
+                    "--granularity", "day")
     assert code == 0, out
     assert env.requests[0][2] == {"shop_id": "s", "start_date": "2026-11-01", "end_date": "2026-11-25",
-                                  "granularity": "DAY", "currency": "USD"}
+                                  "granularity": "DAY"}
     assert "days after it are not complete yet" in out
     # relative --from counts back from --to
     run(capsys, "shop-performance", "--shop", "s", "--from", "30d", "--to", "2026-11-25", "--json")
@@ -1576,7 +1576,8 @@ def test_shop_performance_validates_dates_locally(capsys, env, monkeypatch):
                  ["--from", "2026-08-28", "--to", "2026-11-27"],    # 91 days
                  ["--from", "91d"],
                  ["--from", "2026/11/01"], ["--to", "2026-02-30"], ["--from", "7h"],
-                 ["--granularity", "1D"], ["--currency", "EUR"]):
+                 ["--granularity", "1D"],
+                 ["--currency", "USD"]):  # no currency option: money is always the shop's local currency
         code, out = run(capsys, "shop-performance", "--shop", "s", *argv)
         assert code == 2, (argv, out)
     assert env.requests == []
@@ -1589,11 +1590,11 @@ def test_product_performance_query_table_and_cursor(capsys, env, monkeypatch):
     env.responses["/shop-product-performance"] = page([PRODUCT_PERF], cursor="P2")
     code, out = run(capsys, "product-performance", "--shop", "s", "--from", "2026-11-01", "--to", "2026-11-27",
                     "--sort", "ITEMS_SOLD", "--order", "asc", "--categories", "601, 602,601", "--status", "live",
-                    "--currency", "LOCAL", "--limit", "50")
+                    "--limit", "50")
     assert code == 0, out
     method, path, query, _, _ = env.requests[0]
     assert (method, path) == ("GET", "/shop-product-performance")
-    assert query == {"shop_id": "s", "start_date": "2026-11-01", "end_date": "2026-11-27", "currency": "LOCAL",
+    assert query == {"shop_id": "s", "start_date": "2026-11-01", "end_date": "2026-11-27",
                      "sort": "items_sold", "order": "ASC", "category_ids": "601,602", "product_status": "LIVE",
                      "limit": "50"}
     assert ("product_performance[1]{channel_product_id,gmv,orders,items_sold,sku_orders,product_impressions,"
@@ -1601,7 +1602,7 @@ def test_product_performance_query_table_and_cursor(capsys, env, monkeypatch):
     assert '"1729000000000000001",500 IDR,3,4,3,100,9,"0.0900","0.3333",null' in out
     assert "seller_live_performance" in out  # pass-through objects are pointed to --json
     # the continuation repeats the resolved dates and every filter the cursor is bound to
-    assert ("`boost product-performance --shop s --from 2026-11-01 --to 2026-11-27 --currency LOCAL --sort items_sold "
+    assert ("`boost product-performance --shop s --from 2026-11-01 --to 2026-11-27 --sort items_sold "
             "--order ASC --categories 601,602 --status LIVE --cursor P2`") in out
 
 

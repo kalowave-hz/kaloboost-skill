@@ -378,16 +378,16 @@ don't mix them in one comparison).
 - `boost shop-performance` — one shop's GMV, orders, SKU orders, items sold, buyers, AOV, refunds, product impressions / clicks, conversion; `--granularity DAY` = one row per day (default `ALL` = one total row). `--json` has the full `sales` / `traffic` / `breakdowns` objects (live / video / product-card GMV, creator vs seller, shipping, tax, cancellations and returns).
 - `boost product-performance` — product ranking; `--sort gmv|items_sold|orders --order DESC|ASC`, `--status LIVE|INACTIVE|ALL`, `--categories <id,id>`.
 - `boost sku-performance` — SKU ranking; `--sort gmv|sku_orders|units_sold`, same filters, plus `--products <id,id>` (≤100) for the SKUs of some products.
-- All three take `--from` / `--to` and `--currency LOCAL|USD` (default `LOCAL`, the shop's currency).
+- All three take `--from` / `--to`. **Money is always the shop's local currency** — there is no USD option (TikTok's USD conversion didn't fully take effect in testing, so it isn't offered); convert yourself before comparing shops in different currencies.
 
 ### Reading performance right
 
 - **Dates are calendar days in the shop's timezone** (`yyyy-MM-dd`, not ISO times), `--from` inclusive, **`--to` exclusive**: one day D is `--from D --to D+1`; "the last 7 days" is `--from <today − 7> --to <today>` — the default when both are omitted (the CLI uses your local date, which approximates the shop's timezone). `--from 30d` = 30 days before `--to`. `--to` must be after `--from`; **at most 90 days per call** — split longer ranges.
 - **Data lags a day (T-1)**: `latest_available_date` is the last day whose offline data is ready; days after it (usually today, and future dates) come back empty or incomplete — say so instead of reporting a drop.
-- **Rates are decimal strings**: `"0.0843"` = 8.43% (`ctr`, `add_cart_rate`, `click_order_rate`, `unique_ctr`, `avg_conversation_rate`, …). Money is `{amount, currency}` with an ISO 4217 code (`USD` when `--currency USD`).
+- **Rates are decimal strings**: `"0.0843"` = 8.43% (`ctr`, `add_cart_rate`, `click_order_rate`, `unique_ctr`, `avg_conversation_rate`, …). Money is `{amount, currency}` in the shop's local currency; `currency` is its ISO 4217 code (`IDR`, `MYR`, `THB`, …).
 - **Product performance**: `total_performance` (all channels) has fixed fields (`gmv`, `orders`, `items_sold`, `sku_orders`, `estimated_customers`, `aov`, impressions / clicks / `ctr`, add-to-cart, `click_order_rate`, refunds); the 7 channel objects (`seller_live_performance`, `seller_video_performance`, `seller_product_card_performance`, `affiliate_total_performance`, `affiliate_live_performance`, `affiliate_video_performance`, `shop_tab_performance`) are TikTok's raw sub-objects forwarded unchanged — read them, don't assume fields.
 - **Ids**: `channel_sku_id` / `channel_product_id` are decimal strings that can exceed 2^53 — keep them as text.
-- **Paging**: a page can be shorter than `--limit` or even empty; only a null `next_cursor` ends the list. The cursor is bound to the shop, dates, currency, sort and filters — follow the `More:` hint as printed.
+- **Paging**: a page can be shorter than `--limit` or even empty; only a null `next_cursor` ends the list. The cursor is bound to the shop, dates, sort and filters — follow the `More:` hint as printed.
 
 ### Availability & scopes
 

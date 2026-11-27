@@ -4,6 +4,9 @@ stored in Kaloboost). Read-only.
 
 Dates are the shop's registered-timezone calendar days, `--to` is exclusive, the span is at most 90
 days, and the data lags one day: read `latest_available_date` before trusting the last day.
+
+Money is always the shop's local currency (each amount carries its ISO code). There is no USD option:
+TikTok's `currency=USD` did not fully take effect when tested on SG Dev (2026-11-27), so it is not offered.
 """
 
 from __future__ import annotations
@@ -17,7 +20,6 @@ from ..errors import UsageError
 from . import common
 
 GRANULARITIES = ("ALL", "DAY")
-CURRENCIES = ("LOCAL", "USD")
 ORDERS = ("DESC", "ASC")
 PRODUCT_STATUSES = ("LIVE", "INACTIVE", "ALL")
 PRODUCT_SORTS = ("gmv", "items_sold", "orders")
@@ -131,17 +133,12 @@ def _date_flags() -> list[Flag]:
     ]
 
 
-def _currency_flag() -> Flag:
-    return Flag("--currency", "money in LOCAL (shop currency, default) or USD", metavar="CURRENCY")
-
-
 def _list_flags(sorts: tuple) -> list[Flag]:
     return [
         Flag("--sort", "sort by: " + " ".join(sorts) + " (default gmv)", metavar="FIELD"),
         Flag("--order", "DESC (default) or ASC", metavar="ORDER"),
         Flag("--categories", "comma-separated TikTok category ids (≤100)", metavar="IDS"),
         Flag("--status", "product status: " + " ".join(PRODUCT_STATUSES) + " (default ALL)", metavar="STATUS"),
-        _currency_flag(),
     ]
 
 
@@ -169,10 +166,8 @@ def shop_performance(cfg, opts, args):
     shop = common.shop(cfg, opts)
     start, end = date_range(opts)
     granularity = enum(opts.get("granularity"), "--granularity", GRANULARITIES)
-    currency = enum(opts.get("currency"), "--currency", CURRENCIES)
     env = api.request(cfg, "GET", "/shop-performance",
-                      params={"shop_id": shop, "start_date": start, "end_date": end, "granularity": granularity,
-                              "currency": currency})
+                      params={"shop_id": shop, "start_date": start, "end_date": end, "granularity": granularity})
     item = env.get("data") or {}
     if opts.get("json"):
         common.dump_json(item)
@@ -231,20 +226,19 @@ def _empty_page_hint(rows: list, cursor: str | None) -> list[str]:
 def _performance_list(cfg, opts, *, command: str, path: str, noun: str, sorts: tuple, sku: bool):
     shop = common.shop(cfg, opts)
     start, end = date_range(opts)
-    currency = enum(opts.get("currency"), "--currency", CURRENCIES)
     sort = enum(opts.get("sort"), "--sort", sorts, lower=True)
     order = enum(opts.get("order"), "--order", ORDERS)
     categories = id_list(opts.get("categories"), "--categories")
     status = enum(opts.get("status"), "--status", PRODUCT_STATUSES)
     products = id_list(opts.get("products"), "--products") if sku else None
-    params = {"shop_id": shop, "start_date": start, "end_date": end, "currency": currency, "sort": sort,
+    params = {"shop_id": shop, "start_date": start, "end_date": end, "sort": sort,
               "order": order, "category_ids": categories, "product_status": status, "product_ids": products}
     rows, cursor, pages = common.fetch_pages(cfg, path, params, opts)
     if opts.get("json"):
         common.dump_json({"data": rows, "next_cursor": cursor})
         return 0
     base = common.again(command, *common.flag_pairs(
-        shop=shop, **{"from": start}, to=end, currency=currency, sort=sort, order=order, categories=categories,
+        shop=shop, **{"from": start}, to=end, sort=sort, order=order, categories=categories,
         status=status, products=products))
     latest = next((r.get("latest_available_date") for r in rows if r.get("latest_available_date")), None)
     context = f"shop {shop}, {start} to {end} (exclusive)"
@@ -296,7 +290,6 @@ COMMANDS = [
             common.shop_flag(),
             *_date_flags(),
             Flag("--granularity", "ALL = one total row (default), DAY = one row per day", metavar="GRANULARITY"),
-            _currency_flag(),
         ],
         examples=[
             "boost shop-performance --shop <SHOP_ID>",
