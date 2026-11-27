@@ -1125,3 +1125,123 @@ def test_unknown_status_and_type_go_to_server(capsys, env):
     q = env.requests[1][2]
     assert (q["status"], q["type"]) == ("NEW_STATUS", "SWAP,REFUND")
     assert "Unsupported type value; see SKILL.md" in out
+
+
+# --- coupons / promotions / product diagnoses (WP-24) --------------------------
+
+SHOP_COUPON = {
+    "channel_coupon_id": "7312345678901234567", "title": "Flash 10", "status": "ONGOING",
+    "display_type": "REGULAR", "claim_start_time": "2026-11-01T00:00:00Z", "claim_end_time": "2026-11-30T00:00:00Z",
+    "redemption": {"type": "ABSOLUTE", "start_time": "2026-11-01T00:00:00Z", "end_time": "2026-12-01T00:00:00Z"},
+    "discount": {"type": "PERCENTAGE", "percentage": "10"},
+    "usage_stats": {"claimed_count": 20, "redeemed_count": 7},
+}
+
+SHOP_COUPON_RELATIVE = dict(SHOP_COUPON, redemption={"type": "RELATIVE", "relative_days": 7})
+
+SHOP_PROMOTION = {
+    "channel_promotion_id": "900000000000000211", "title": "11.11", "type": "FLASHSALE", "status": "ONGOING",
+    "begin_time": "2026-11-10T00:00:00Z", "end_time": "2026-11-12T00:00:00Z",
+    "products": [{"channel_product_id": "p1"}, {"channel_product_id": "p2"}],
+}
+
+PRODUCT_DIAGNOSIS = {
+    "channel_product_id": "1737463459808511821", "listing_quality": None,
+    "diagnoses": [
+        {"field": "IMAGE", "issues": [{"code": "I1"}, {"code": "I2"}]},
+        {"field": "TITLE", "issues": [{"code": "T1"}]},
+    ],
+}
+
+
+def test_coupon_promotion_resolve_and_aliases():
+    from kaloboost.cli import _resolve
+
+    assert _resolve(["coupon", "list"])[0].path == "coupon list"
+    assert _resolve(["coupons"])[0].path == "coupon list"
+    assert _resolve(["coupon"])[0].path == "coupon list"
+    assert _resolve(["promotions", "get", "x"])[0].path == "promotion get"
+    assert _resolve(["product", "diagnose"])[0].path == "product diagnose"
+
+
+def test_coupon_list_query_and_table(capsys, env):
+    env.responses["/shop-coupons"] = page([SHOP_COUPON], cursor="C1")
+    code, out = run(capsys, "coupon", "list", "--shop", "s", "--status", "ongoing, NOT_START",
+                    "--display-type", "regular", "--title", "flash")
+    assert code == 0, out
+    method, path, query, _, _ = env.requests[0]
+    assert (method, path) == ("GET", "/shop-coupons")
+    assert query == {"shop_id": "s", "status": "ONGOING,NOT_START", "display_type": "REGULAR",
+                     "title": "flash", "limit": "50"}
+    assert "coupons[1]{channel_coupon_id,title,status,claim_end,redeem_by,discount,usage}:" in out
+    assert '"7312345678901234567",Flash 10,ONGOING,"2026-11-30T00:00:00Z","2026-12-01T00:00:00Z",PERCENTAGE 10,20/7' in out
+    assert "--cursor C1`" in out
+
+
+def test_coupon_list_relative_redemption_hint(capsys, env):
+    env.responses["/shop-coupons"] = page([SHOP_COUPON_RELATIVE])
+    code, out = run(capsys, "coupon", "list", "--shop", "s")
+    assert code == 0
+    assert "RELATIVE 7d" in out  # no absolute end_time exists for RELATIVE redemptions
+
+
+def test_coupon_list_validates_locally(capsys, env):
+    for argv in (["--status", ""], ["--status", "ONGOING,"]):
+        code, out = run(capsys, "coupon", "list", "--shop", "s", *argv)
+        assert code == 2, (argv, out)
+    assert env.requests == []
+
+
+def test_coupon_get(capsys, env):
+    env.responses["/shop-coupons/7312345678901234567"] = {"data": SHOP_COUPON, "request_id": "r"}
+    code, out = run(capsys, "coupon", "get", "7312345678901234567", "--shop", "s")
+    assert code == 0, out
+    method, path, query, _, _ = env.requests[0]
+    assert (method, path) == ("GET", "/shop-coupons/7312345678901234567")
+    assert query == {"shop_id": "s"}
+    code, out = run(capsys, "coupon", "get", "a%2Fb", "--shop", "s")
+    assert code == 2  # path-injection charset rejected locally
+    code, out = run(capsys, "coupon", "get", "--shop", "s")
+    assert code == 2
+
+
+def test_promotion_list_query_and_table(capsys, env):
+    env.responses["/shop-promotions"] = page([SHOP_PROMOTION])
+    code, out = run(capsys, "promotion", "list", "--shop", "s", "--status", "ongoing", "--type", "flashsale")
+    assert code == 0, out
+    method, path, query, _, _ = env.requests[0]
+    assert (method, path) == ("GET", "/shop-promotions")
+    assert query == {"shop_id": "s", "status": "ONGOING", "type": "FLASHSALE", "limit": "50"}
+    assert "promotions[1]{channel_promotion_id,title,type,status,begin_time,end_time,products}:" in out
+    assert '"900000000000000211","11.11",FLASHSALE,ONGOING' in out and out.count("\n") > 0
+    code, out = run(capsys, "promotion", "list", "--shop", "s", "--status", "ONGOING,EXPIRED")
+    assert code == 2  # single-valued per the contract
+
+
+def test_promotion_get(capsys, env):
+    env.responses["/shop-promotions/900000000000000211"] = {"data": SHOP_PROMOTION, "request_id": "r"}
+    code, out = run(capsys, "promotion", "get", "900000000000000211", "--shop", "s", "--json")
+    assert code == 0
+    assert json.loads(out)["channel_promotion_id"] == "900000000000000211"
+
+
+def test_product_diagnose(capsys, env):
+    env.responses["/product-diagnoses"] = {"data": [PRODUCT_DIAGNOSIS], "request_id": "r"}
+    code, out = run(capsys, "product", "diagnose", "--shop", "s",
+                    "--products", "1737463459808511821,1729999999999999999")
+    assert code == 0, out
+    method, path, query, _, _ = env.requests[0]
+    assert (method, path) == ("GET", "/product-diagnoses")
+    assert query == {"shop_id": "s", "product_ids": "1737463459808511821,1729999999999999999"}
+    assert "product_diagnoses[1]{channel_product_id,listing_quality,issues,image_issues}:" in out
+    assert '"1737463459808511821",-,3,2' in out  # listing_quality null -> '-', 3 issues of which 2 image
+    assert "1 missing = do not exist or not in this shop" in out
+
+
+def test_product_diagnose_validates_locally(capsys, env):
+    code, out = run(capsys, "product", "diagnose", "--shop", "s", "--products", "a%2F")
+    assert code == 2
+    many = ",".join("1737000000000000%02d" % i for i in range(201))
+    code, out = run(capsys, "product", "diagnose", "--shop", "s", "--products", many)
+    assert code == 2
+    assert env.requests == []

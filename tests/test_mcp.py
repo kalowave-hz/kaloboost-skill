@@ -193,3 +193,21 @@ def test_shop_order_tools(env):
     assert [r[1] for r in env.requests] == ["/shop-orders", "/shop-authorization-links"]
     assert env.requests[0][2]["status"] == "DELIVERED"
     assert env.requests[1][4] == {"shop_id": "806"}
+
+
+def test_coupon_promotion_diagnose_tools(env):
+    assert {"coupon_list", "coupon_get", "promotion_list", "promotion_get", "product_diagnose"} <= set(TOOLS)
+    env.responses["/shop-coupons"] = page([{"channel_coupon_id": "c1"}], cursor="c2")
+
+    async def check():
+        async with Client(create_server()) as client:
+            tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+            for name in ("coupon_list", "coupon_get", "promotion_list", "promotion_get", "product_diagnose"):
+                assert tools[name].annotations.read_only_hint, name  # everything in WP-24 is read-only
+            result = await client.call_tool("coupon_list", {"shop": "s", "status": "ONGOING"})
+            assert result.structured_content == {"data": {"data": [{"channel_coupon_id": "c1"}], "next_cursor": "c2"}}
+            bad = await client.call_tool("product_diagnose", {"shop": "s", "products": "a%2F"})
+            assert bad.is_error
+
+    anyio.run(check)
+    assert env.requests[0][2]["status"] == "ONGOING"
