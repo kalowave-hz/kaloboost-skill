@@ -1,5 +1,5 @@
 """`boost campaign` / `boost open-collab` — TikTok platform campaigns of a shop and its open
-collaboration settings / free-sample rules, read live from TikTok (nothing is stored in Kaloboost).
+collaboration settings / free-sample rules / products in open collaboration, read live from TikTok (nothing is stored in Kaloboost).
 
 Everything here is read-only: registering for or leaving a campaign, and changing open
 collaboration, are only possible in Seller Center. TikTok's rule for these routes is "missing =
@@ -77,12 +77,12 @@ def _int64_id(value: str | None, what: str) -> str:
     return v
 
 
-def _name(value: str | None) -> str | None:
+def _name(value: str | None, flag: str = "--name") -> str | None:
     if value is None or not value.strip():
         return None
     v = value.strip()
     if len(v.encode("utf-8")) > NAME_MAX_BYTES:
-        raise UsageError(f"--name is at most {NAME_MAX_BYTES} bytes in UTF-8")
+        raise UsageError(f"{flag} is at most {NAME_MAX_BYTES} bytes in UTF-8")
     return v
 
 
@@ -440,6 +440,93 @@ def open_collab_sample_rules(cfg, opts, args):
     return 0
 
 
+OPEN_COLLAB_FIELDS = ("channel_open_collaboration_id", "status", "commission", "commission_end_at",
+                      "channel_product_id", "title", "product_status", "price", "inventory", "showcase_creators",
+                      "content_creators")
+OPEN_COLLAB_SORTS = ("product_original_price",)
+SORT_ORDERS = ("DESC", "ASC")
+
+
+def _price_range(price: dict | None) -> str | None:
+    if not isinstance(price, dict):
+        return None
+    lo, hi, cur = price.get("minimum_amount"), price.get("maximum_amount"), price.get("currency") or ""
+    if lo is None and hi is None:
+        return None
+    text = str(lo if hi is None or lo == hi else f"{lo}-{hi}") if lo is not None else str(hi)
+    return f"{text} {cur}".strip()
+
+
+def _open_collab_row(c: dict) -> dict:
+    commission = c.get("current_commission") or {}
+    product = c.get("product") or {}
+    rate = commission.get("rate")
+    pct = _rate_percent(rate)
+    return {
+        "channel_open_collaboration_id": c.get("channel_open_collaboration_id"),
+        "status": c.get("status") if c.get("status") != "UNMAPPED" else f"UNMAPPED:{c.get('channel_status')}",
+        "commission": f"{rate} ({pct})" if rate is not None and pct else rate,
+        "commission_end_at": commission.get("end_at"),
+        "channel_product_id": product.get("channel_product_id"),
+        "title": render.clip(product.get("title")),
+        "product_status": (product.get("status") if product.get("status") != "UNMAPPED"
+                           else f"UNMAPPED:{product.get('channel_status')}"),
+        "price": _price_range(product.get("original_price")),
+        "inventory": product.get("inventory"),
+        "showcase_creators": c.get("showcase_creator_count"),
+        "content_creators": c.get("content_creator_count"),
+    }
+
+
+def _single_enum(value: str | None, flag: str, allowed: tuple, *, lower: bool = False) -> str | None:
+    if value is None or not value.strip():
+        return None
+    v = value.strip().lower() if lower else value.strip().upper()
+    if v not in allowed:
+        raise UsageError(f"unsupported {flag} '{value}'", [f"valid values: {' '.join(allowed)}"])
+    return v
+
+
+def open_collab_list(cfg, opts, args):
+    shop = common.shop(cfg, opts)
+    product = (opts.get("product") or "").strip() or None
+    product_name = _name(opts.get("product_name"), "--product-name")
+    if product and product_name:
+        raise UsageError("--product and --product-name can't be combined", ["Search by id or by name, not both"])
+    if product and not _OBJECT_ID.fullmatch(product):
+        raise UsageError(f"--product must match [A-Za-z0-9_-]{{1,64}}, got '{product}'")
+    category = (opts.get("category") or "").strip() or None
+    if category is not None:
+        category = _int64_id(category, "--category")
+    sort = _single_enum(opts.get("sort"), "--sort", OPEN_COLLAB_SORTS, lower=True)
+    order = _single_enum(opts.get("order"), "--order", SORT_ORDERS)
+    params = {"shop_id": shop, "product_id": product, "product_name": product_name, "category_id": category,
+              "sort": sort, "order": order}
+    rows, cursor, pages = common.fetch_pages(cfg, "/open-collaborations", params, opts)
+    if opts.get("json"):
+        common.dump_json({"data": rows, "next_cursor": cursor})
+        return 0
+    base = common.again("open-collab list", *common.flag_pairs(
+        shop=shop, product=product, product_name=product_name, category=category, sort=sort, order=order))
+    if not rows:
+        render.emit_empty("open_collaborations", f"shop {shop}", common.page_hints(
+            rows, cursor, pages, base, opts, _empty_page_hint(rows, cursor) + [
+                "No product of this shop is in open collaboration with these filters (ended ones are not listed)"]))
+        return 0
+    render.emit_table("open_collaborations", [_open_collab_row(c) for c in rows], OPEN_COLLAB_FIELDS)
+    hints = [
+        f"{len(rows)} products in open collaboration · commission is a ratio string (\"0.1000\" = 10%), "
+        "commission_end_at ISO 8601 UTC",
+        "TERMINATING = the seller removed it; it ends at commission_end_at · price is the original price range "
+        "of all SKUs",
+        "showcase_creators = creators who added it to their showcase; content_creators = creators who posted a "
+        "live or video with it · null = TikTok gave no answer",
+        "Read-only: open collaboration is changed in Seller Center",
+    ]
+    render.emit_help(common.page_hints(rows, cursor, pages, base, opts, hints))
+    return 0
+
+
 def _locale_flag() -> Flag:
     return Flag("--locale", "BCP-47 language for campaign texts (default en-US), e.g. id-ID", metavar="LOCALE")
 
@@ -528,6 +615,25 @@ COMMANDS = [
         handler=open_collab_settings,
         flags=[common.shop_flag()],
         examples=["boost open-collab settings --shop <SHOP_ID>"],
+    ),
+    Command(
+        path="open-collab list",
+        summary="Products of a shop in open collaboration: current commission rate, product status, price, "
+                "creators; read-only",
+        handler=open_collab_list,
+        flags=[
+            common.shop_flag(),
+            Flag("--product", "one TikTok product id (not with --product-name)", metavar="PRODUCT_ID"),
+            Flag("--product-name", "product name keyword, UTF-8 ≤100 bytes (not with --product)", metavar="TEXT"),
+            Flag("--category", "top-level TikTok category id", metavar="CATEGORY_ID"),
+            Flag("--sort", "product_original_price (default: creation time)", metavar="FIELD"),
+            Flag("--order", "DESC (default) or ASC", metavar="ORDER"),
+            *common.page_flags(),
+        ],
+        examples=[
+            "boost open-collab list --shop <SHOP_ID>",
+            "boost open-collab list --shop <SHOP_ID> --product-name serum --sort product_original_price --order ASC",
+        ],
     ),
     Command(
         path="open-collab sample-rules",
