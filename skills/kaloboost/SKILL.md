@@ -8,10 +8,12 @@ description: >
   站内信), collaboration status, free samples and approving / rejecting sample applications,
   creator videos and metrics, affiliate orders and commission, full shop orders and SLA deadlines,
   shop returns / refunds / replacements, coupons and promotions, TikTok platform campaigns and
-  open collaboration / free-sample rules, generating TikTok Shop authorization links, change events
-  and webhooks — 达人建联、发私信/定向邀约、建联进度、取消建联、达人聊天/站内信收发、合作状态、
-  寄样/申样、审核申样、达人视频、联盟订单、佣金归因、店铺全量订单与超时预警、退货/退款/换货、
-  平台活动（Campaign）报名资格与已报名活动、公开合作设置与免费样品规则、生成绑店授权链接、事件推送.
+  open collaboration (settings, free-sample rules, products and commission), TikTok Shop Analytics
+  (shop GMV / orders / traffic, product and SKU sales rankings), generating TikTok Shop authorization
+  links, change events and webhooks — 达人建联、发私信/定向邀约、建联进度、取消建联、达人聊天/站内信收发、
+  合作状态、寄样/申样、审核申样、达人视频、联盟订单、佣金归因、店铺全量订单与超时预警、退货/退款/换货、
+  平台活动（Campaign）报名资格与已报名活动、公开合作设置/免费样品规则/公开合作商品与佣金、
+  店铺经营数据（GMV、订单、流量）与商品/SKU 销售排行、生成绑店授权链接、事件推送.
   Runs via the bundled `boost` CLI (Python, zero install); use it even if the user never
   says "kaloboost".
 ---
@@ -110,6 +112,9 @@ names what the account still needs) — another credential won't fix them.
 | `boost campaign groups` / `list --group <id>` / `get <id> --type` | TikTok platform campaigns a shop can see: invited, eligibility, benefits, fees; read-only (register in Seller Center) |
 | `boost campaign registered` / `counts` | platform campaigns the shop registered for: status, registration / review counts |
 | `boost open-collab settings` / `sample-rules` | open collaboration auto-add + default commission; free-sample rules of 1-200 products; read-only |
+| `boost open-collab list` | products in open collaboration: current commission rate, product status, price, creators; --product\|--product-name --category |
+| `boost shop-performance` | TikTok Shop Analytics of a shop: GMV, orders, buyers, AOV, refunds, traffic; --from --to (≤90 days) --granularity DAY |
+| `boost product-performance` / `sku-performance` | product / SKU sales ranking (TikTok official numbers); --sort --status --categories (--products for SKUs) |
 | `boost attribution list` / `get <id>` | affiliate attribution per order line; --creator --order --since |
 | `boost event list` | change events (outreach, collab, sample, new chat message); --types --since |
 | `boost webhook list` | push endpoints for change events |
@@ -339,6 +344,7 @@ Seller Center; never promise them.
 - `boost campaign registered` / `boost campaign counts` — campaigns the shop registered for, and their counts.
 - `boost open-collab settings` (alias `open-collaboration`) — auto-add products to open collaboration, default commission.
 - `boost open-collab sample-rules --products <id,id,...>` — free-sample rules of 1-200 products.
+- `boost open-collab list` — the shop's products in open collaboration with their current commission; `--product <id>` or `--product-name <keyword>` (not both), `--category <top-level id>`, `--sort product_original_price --order ASC|DESC` (default: creation time).
 
 ### Reading campaigns right
 
@@ -353,6 +359,7 @@ Seller Center; never promise them.
 
 ### Reading open collaboration right
 
+- **Open collaboration products** (`open-collab list`): `current_commission.rate` is a ratio string — `"0.1000"` = 10%; `start_at`/`end_at` are ISO 8601 UTC. `status` `NORMAL` = active, `TERMINATING` = the seller removed it and it ends at `end_at` (ended ones aren't listed); `UNMAPPED` carries TikTok's raw value in `channel_status`. `product.status` is `LIVE` / `OUT_OF_STOCK` / `SELLER_DEACTIVATE` / `PLATFORM_DEACTIVATE` / `GNE_REJECT` / `DELETE` / `OTHER`; `original_price` is the min-max original price over all SKUs. `showcase_creator_count` = creators who added it to their showcase, `content_creator_count` = creators who posted a live or video with it.
 - **`commission_rate`** is a ratio string: `"0.1000"` = 10%. `enabled=true` means existing non-affiliate products were added once and new products join automatically; `false` means new products don't (already added ones stay).
 - **Sample rules**: a product absent from `rules` is listed in `products_not_returned` — it has **no free-sample rule, does not exist, or is not in this shop** (TikTok doesn't say which); it is not an error, and an all-missing request still answers 200 with empty `rules`. `is_sample_time_unlimited=true` means any time (no `start_time`/`end_time`); thresholds (`minimum_follower_count`, `minimum_gmv` — TikTok's raw integer, `avg_ec_video_views`, `category_ids`, `predicted_fulfillment_rank`) are minimums a creator must meet.
 
@@ -362,13 +369,41 @@ Seller Center; never promise them.
 - Open collaboration is `OPEN_COLLABORATION` and needs `seller.affiliate_collaboration.read`, which nearly every market's app carries — **US shops included**. A 422 `SCOPE_MISSING` there means ask the shop owner to re-authorize: `boost shop-auth create --shop <shop_id>`.
 - `boost shops` lists both keys per shop.
 
+## Shop, product and SKU performance (TikTok Shop Analytics)
+
+Read-only, live from TikTok Shop Analytics — **TikTok's official numbers for the shop's own sales**,
+not KaloData's estimates (KaloData is T+1 market-wide data with its own method; the two won't match,
+don't mix them in one comparison).
+
+- `boost shop-performance` — one shop's GMV, orders, SKU orders, items sold, buyers, AOV, refunds, product impressions / clicks, conversion; `--granularity DAY` = one row per day (default `ALL` = one total row). `--json` has the full `sales` / `traffic` / `breakdowns` objects (live / video / product-card GMV, creator vs seller, shipping, tax, cancellations and returns).
+- `boost product-performance` — product ranking; `--sort gmv|items_sold|orders --order DESC|ASC`, `--status LIVE|INACTIVE|ALL`, `--categories <id,id>`.
+- `boost sku-performance` — SKU ranking; `--sort gmv|sku_orders|units_sold`, same filters, plus `--products <id,id>` (≤100) for the SKUs of some products.
+- All three take `--from` / `--to` and `--currency LOCAL|USD` (default `LOCAL`, the shop's currency).
+
+### Reading performance right
+
+- **Dates are calendar days in the shop's timezone** (`yyyy-MM-dd`, not ISO times), `--from` inclusive, **`--to` exclusive**: one day D is `--from D --to D+1`; "the last 7 days" is `--from <today − 7> --to <today>` — the default when both are omitted (the CLI uses your local date, which approximates the shop's timezone). `--from 30d` = 30 days before `--to`. `--to` must be after `--from`; **at most 90 days per call** — split longer ranges.
+- **Data lags a day (T-1)**: `latest_available_date` is the last day whose offline data is ready; days after it (usually today, and future dates) come back empty or incomplete — say so instead of reporting a drop.
+- **Rates are decimal strings**: `"0.0843"` = 8.43% (`ctr`, `add_cart_rate`, `click_order_rate`, `unique_ctr`, `avg_conversation_rate`, …). Money is `{amount, currency}` with an ISO 4217 code (`USD` when `--currency USD`).
+- **Product performance**: `total_performance` (all channels) has fixed fields (`gmv`, `orders`, `items_sold`, `sku_orders`, `estimated_customers`, `aov`, impressions / clicks / `ctr`, add-to-cart, `click_order_rate`, refunds); the 7 channel objects (`seller_live_performance`, `seller_video_performance`, `seller_product_card_performance`, `affiliate_total_performance`, `affiliate_live_performance`, `affiliate_video_performance`, `shop_tab_performance`) are TikTok's raw sub-objects forwarded unchanged — read them, don't assume fields.
+- **Ids**: `channel_sku_id` / `channel_product_id` are decimal strings that can exceed 2^53 — keep them as text.
+- **Paging**: a page can be shorter than `--limit` or even empty; only a null `next_cursor` ends the list. The cursor is bound to the shop, dates, currency, sort and filters — follow the `More:` hint as printed.
+
+### Availability & scopes
+
+- The three performance commands are `SHOP_ANALYTICS` and need the TikTok scope `data.shop_analytics.public.read`. **The JP app doesn't carry it** — JP shops answer 422 `SCOPE_MISSING` and re-authorizing won't help; tell the user it isn't available for Japan. Some earlier-authorized **Indonesia** shops (and the odd shop elsewhere) lack it too: there a 422 `SCOPE_MISSING` means ask the shop owner to re-authorize — `boost shop-auth create --shop <shop_id>`.
+- `open-collab list` is `OPEN_COLLABORATION` and needs `seller.affiliate_collaboration.read`, available in every market; a `SCOPE_MISSING` there is also fixed by re-authorizing.
+- `boost shops` lists `SHOP_ANALYTICS` per shop.
+
 ## Conventions
 
 - Shop-level commands need `--shop <shop_id>` from `boost shops` (or a saved default)
 - Lists take `--limit` (1-100; exception: `shop-return list` takes 10-50, default 20) `--cursor` `--all`. To page, run the exact command in the `More:`
   hint — a cursor only works with the same `--shop`/`--since`/`--from`/`--to` it was issued with,
   and expires after 24h. `--all` follows cursors for up to 20 pages
-- `--since` / `--from` / `--to` take `30m`, `24h`, `7d`, `yyyy-MM-dd` or ISO 8601 UTC
+- `--since` / `--from` / `--to` take `30m`, `24h`, `7d`, `yyyy-MM-dd` or ISO 8601 UTC — except the
+  performance commands (`shop-performance`, `product-performance`, `sku-performance`): shop-timezone
+  `yyyy-MM-dd` only (`--from` also takes `Nd`), `--to` exclusive
 - Creator commands are per market: `--region US` (default), GB ID TH VN PH MY SG JP MX BR DE ES FR IT NL IE PL
 - Run `boost <command> --help` for per-command flags and examples
 

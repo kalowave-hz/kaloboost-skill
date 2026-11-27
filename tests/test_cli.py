@@ -1478,3 +1478,201 @@ def test_campaign_scope_missing_hint(capsys, env):
     code, out = run(capsys, "campaign", "groups", "--shop", "s")
     assert code == 1
     assert "lacks a permission" in out
+
+
+# --- shop / product / SKU performance and open collaboration search (WP-24 batch 3) ----------
+
+SHOP_PERF = {
+    "latest_available_date": "2026-11-26",
+    "intervals": [{
+        "start_date": "2026-11-20", "end_date": "2026-11-27",
+        "sales": {"gmv": {"amount": "1234.50", "currency": "MYR"}, "orders_count": 12, "items_sold": 0,
+                  "customers_count": None, "avg_order_value": {"amount": "102.88", "currency": "MYR"}},
+        "traffic": {"product_impressions": 5000, "product_clicks": 300, "avg_conversation_rate": "0.0843"},
+        "breakdowns": {"content_breakdown": []},
+    }],
+}
+
+PRODUCT_PERF = {
+    "channel_product_id": "1729000000000000001", "latest_available_date": "2026-11-26",
+    "total_performance": {"gmv": {"amount": "500", "currency": "IDR"}, "orders": 3, "items_sold": 4,
+                          "sku_orders": 3, "product_impressions": 100, "product_clicks": 9, "ctr": "0.0900",
+                          "click_order_rate": "0.3333", "refunds": None},
+    "seller_live_performance": {"gmv": {"amount": "0", "currency": "IDR"}},
+}
+
+SKU_PERF = {"channel_sku_id": "1729000000000009999", "channel_product_id": "1729000000000000001",
+            "gmv": {"amount": "500", "currency": "IDR"}, "sku_orders": 3, "units_sold": 4,
+            "latest_available_date": "2026-11-26"}
+
+OPEN_COLLAB = {
+    "channel_open_collaboration_id": "7300000000000000001", "status": "TERMINATING", "channel_status": None,
+    "current_commission": {"rate": "0.1000", "start_at": "2026-11-01T00:00:00Z", "end_at": "2026-12-01T00:00:00Z"},
+    "showcase_creator_count": 0, "content_creator_count": None,
+    "product": {"channel_product_id": "1729000000000000001", "title": "Serum", "main_image_url": "https://x/y.jpg",
+                "status": "UNMAPPED", "channel_status": "NEW_STATE", "inventory": 7,
+                "original_price": {"currency": "MYR", "minimum_amount": "10.00", "maximum_amount": "12.50"}},
+}
+
+
+def _freeze_today(monkeypatch, day="2026-11-27"):
+    monkeypatch.setattr("kaloboost.commands.shop_analytics._today", lambda: datetime.date.fromisoformat(day))
+
+
+def test_performance_resolve():
+    from kaloboost.cli import _resolve
+
+    assert _resolve(["shop-performance"])[0].path == "shop-performance"
+    assert _resolve(["product-performance"])[0].path == "product-performance"
+    assert _resolve(["sku-performance"])[0].path == "sku-performance"
+    assert _resolve(["open-collab", "list"])[0].path == "open-collab list"
+    assert _resolve(["product", "diagnose"])[0].path == "product diagnose"  # untouched
+
+
+def test_shop_performance_defaults_to_last_7_days(capsys, env, monkeypatch):
+    _freeze_today(monkeypatch)
+    env.responses["/shop-performance"] = {"data": SHOP_PERF, "request_id": "r"}
+    code, out = run(capsys, "shop-performance", "--shop", "s")
+    assert code == 0, out
+    method, path, query, _, _ = env.requests[0]
+    assert (method, path) == ("GET", "/shop-performance")
+    assert query == {"shop_id": "s", "start_date": "2026-11-20", "end_date": "2026-11-27"}
+    assert ("shop_performance[1]{start_date,end_date,gmv,orders,items_sold,customers,aov,refunds,"
+            "product_impressions,product_clicks,conversion_rate}:") in out
+    assert "2026-11-20,2026-11-27,1234.50 MYR,12,0,null,102.88 MYR,null,5000,300,\"0.0843\"" in out
+    assert "latest_available_date = 2026-11-26" in out and "8.43%" in out
+    assert "not the same numbers as KaloData" in out
+
+
+def test_shop_performance_query_and_lag(capsys, env, monkeypatch):
+    _freeze_today(monkeypatch)
+    env.responses["/shop-performance"] = {"data": dict(SHOP_PERF, latest_available_date="2026-11-20")}
+    code, out = run(capsys, "shop-performance", "--shop", "s", "--from", "2026-11-01", "--to", "2026-11-25",
+                    "--granularity", "day", "--currency", "usd")
+    assert code == 0, out
+    assert env.requests[0][2] == {"shop_id": "s", "start_date": "2026-11-01", "end_date": "2026-11-25",
+                                  "granularity": "DAY", "currency": "USD"}
+    assert "days after it are not complete yet" in out
+    # relative --from counts back from --to
+    run(capsys, "shop-performance", "--shop", "s", "--from", "30d", "--to", "2026-11-25", "--json")
+    assert env.requests[1][2]["start_date"] == "2026-10-26"
+    # only --from given: --to = today
+    run(capsys, "shop-performance", "--shop", "s", "--from", "2026-11-26", "--json")
+    assert (env.requests[2][2]["start_date"], env.requests[2][2]["end_date"]) == ("2026-11-26", "2026-11-27")
+
+
+def test_shop_performance_json_is_raw(capsys, env, monkeypatch):
+    _freeze_today(monkeypatch)
+    env.responses["/shop-performance"] = {"data": SHOP_PERF}
+    code, out = run(capsys, "shop-performance", "--shop", "s", "--json")
+    assert code == 0
+    assert json.loads(out) == SHOP_PERF
+
+
+def test_shop_performance_validates_dates_locally(capsys, env, monkeypatch):
+    _freeze_today(monkeypatch)
+    for argv in (["--from", "2026-11-27", "--to", "2026-11-27"],    # to must be after from (exclusive)
+                 ["--from", "2026-11-28", "--to", "2026-11-27"],
+                 ["--from", "2026-08-28", "--to", "2026-11-27"],    # 91 days
+                 ["--from", "91d"],
+                 ["--from", "2026/11/01"], ["--to", "2026-02-30"], ["--from", "7h"],
+                 ["--granularity", "1D"], ["--currency", "EUR"]):
+        code, out = run(capsys, "shop-performance", "--shop", "s", *argv)
+        assert code == 2, (argv, out)
+    assert env.requests == []
+    code, _ = run(capsys, "shop-performance", "--shop", "s", "--from", "2026-08-29", "--to", "2026-11-27", "--json")
+    assert code == 0  # exactly 90 days is fine
+
+
+def test_product_performance_query_table_and_cursor(capsys, env, monkeypatch):
+    _freeze_today(monkeypatch)
+    env.responses["/shop-product-performance"] = page([PRODUCT_PERF], cursor="P2")
+    code, out = run(capsys, "product-performance", "--shop", "s", "--from", "2026-11-01", "--to", "2026-11-27",
+                    "--sort", "ITEMS_SOLD", "--order", "asc", "--categories", "601, 602,601", "--status", "live",
+                    "--currency", "LOCAL", "--limit", "50")
+    assert code == 0, out
+    method, path, query, _, _ = env.requests[0]
+    assert (method, path) == ("GET", "/shop-product-performance")
+    assert query == {"shop_id": "s", "start_date": "2026-11-01", "end_date": "2026-11-27", "currency": "LOCAL",
+                     "sort": "items_sold", "order": "ASC", "category_ids": "601,602", "product_status": "LIVE",
+                     "limit": "50"}
+    assert ("product_performance[1]{channel_product_id,gmv,orders,items_sold,sku_orders,product_impressions,"
+            "product_clicks,ctr,click_order_rate,refunds}:") in out
+    assert '"1729000000000000001",500 IDR,3,4,3,100,9,"0.0900","0.3333",null' in out
+    assert "seller_live_performance" in out  # pass-through objects are pointed to --json
+    # the continuation repeats the resolved dates and every filter the cursor is bound to
+    assert ("`boost product-performance --shop s --from 2026-11-01 --to 2026-11-27 --currency LOCAL --sort items_sold "
+            "--order ASC --categories 601,602 --status LIVE --cursor P2`") in out
+
+
+def test_product_performance_empty_page_with_cursor(capsys, env, monkeypatch):
+    _freeze_today(monkeypatch)
+    env.responses["/shop-product-performance"] = page([], cursor="P2")
+    code, out = run(capsys, "product-performance", "--shop", "s")
+    assert code == 0
+    assert "product_performance: 0 results" in out
+    assert "only a null next_cursor ends the list" in out
+    assert "--from 2026-11-20 --to 2026-11-27 --cursor P2`" in out
+
+
+def test_product_performance_validates_locally(capsys, env, monkeypatch):
+    _freeze_today(monkeypatch)
+    many = ",".join(str(i) for i in range(101))
+    for argv in (["--sort", "units_sold"], ["--order", "UP"], ["--status", "DELETED"], ["--categories", "a/b"],
+                 ["--categories", "1,,2"], ["--categories", many], ["--products", "1"], ["--limit", "101"]):
+        code, out = run(capsys, "product-performance", "--shop", "s", *argv)
+        assert code == 2, (argv, out)
+    assert env.requests == []
+
+
+def test_sku_performance_query_and_table(capsys, env, monkeypatch):
+    _freeze_today(monkeypatch)
+    env.responses["/shop-sku-performance"] = page([SKU_PERF])
+    code, out = run(capsys, "sku-performance", "--shop", "s", "--sort", "units_sold", "--products", "11,12,11")
+    assert code == 0, out
+    method, path, query, _, _ = env.requests[0]
+    assert (method, path) == ("GET", "/shop-sku-performance")
+    assert query == {"shop_id": "s", "start_date": "2026-11-20", "end_date": "2026-11-27", "sort": "units_sold",
+                     "product_ids": "11,12", "limit": "20"}
+    assert "sku_performance[1]{channel_sku_id,channel_product_id,gmv,sku_orders,units_sold}:" in out
+    assert '"1729000000000009999","1729000000000000001",500 IDR,3,4' in out
+    for argv in (["--sort", "items_sold"], ["--products", "a%2F"]):
+        code, _ = run(capsys, "sku-performance", "--shop", "s", *argv)
+        assert code == 2, argv
+    assert len(env.requests) == 1
+
+
+def test_performance_scope_missing(capsys, env, monkeypatch):
+    _freeze_today(monkeypatch)
+    env.responses["/shop-performance"] = err(422, "CHANNEL_NOT_AVAILABLE", "shop_id", "SCOPE_MISSING")
+    code, out = run(capsys, "shop-performance", "--shop", "s")
+    assert code != 0
+    assert "re-authorize" in out and "boost shop-auth create" in out
+
+
+def test_open_collab_list_query_and_table(capsys, env):
+    env.responses["/open-collaborations"] = page([OPEN_COLLAB], cursor="O2")
+    code, out = run(capsys, "open-collab", "list", "--shop", "s", "--product-name", " serum ", "--category", "601",
+                    "--sort", "PRODUCT_ORIGINAL_PRICE", "--order", "asc")
+    assert code == 0, out
+    method, path, query, _, _ = env.requests[0]
+    assert (method, path) == ("GET", "/open-collaborations")
+    assert query == {"shop_id": "s", "product_name": "serum", "category_id": "601", "sort": "product_original_price",
+                     "order": "ASC", "limit": "20"}
+    assert ("open_collaborations[1]{channel_open_collaboration_id,status,commission,commission_end_at,"
+            "channel_product_id,title,product_status,price,inventory,showcase_creators,content_creators}:") in out
+    assert ('"7300000000000000001",TERMINATING,0.1000 (10%),"2026-12-01T00:00:00Z","1729000000000000001",Serum,'
+            '"UNMAPPED:NEW_STATE",10.00-12.50 MYR,7,0,null') in out
+    assert ("`boost open-collab list --shop s --product-name serum --category 601 --sort product_original_price "
+            "--order ASC --cursor O2`") in out
+
+
+def test_open_collab_list_by_product_and_validation(capsys, env):
+    code, _ = run(capsys, "open-collab", "list", "--shop", "s", "--product", "1729000000000000001", "--json")
+    assert code == 0
+    assert env.requests[0][2] == {"shop_id": "s", "product_id": "1729000000000000001", "limit": "20"}
+    for argv in (["--product", "1", "--product-name", "x"], ["--product", "a/b"], ["--product-name", "é" * 51],
+                 ["--category", "0"], ["--category", "abc"], ["--sort", "price"], ["--order", "UP"]):
+        code, out = run(capsys, "open-collab", "list", "--shop", "s", *argv)
+        assert code == 2, (argv, out)
+    assert len(env.requests) == 1

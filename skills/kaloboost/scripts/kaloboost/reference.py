@@ -15,7 +15,7 @@ from .config import DEFAULT_BASE_URL, Config
 
 DESCRIPTION = (
     "Kaloboost creator outreach for TikTok Shop sellers — shops, creator lookup, outreach tasks "
-    "(read, send, cancel), creator chat, collaborations, samples, content, affiliate orders, shop orders and returns, coupons, promotions, product diagnoses, platform campaigns, open collaboration settings and sample rules, change events, webhooks"
+    "(read, send, cancel), creator chat, collaborations, samples, content, affiliate orders, shop orders and returns, coupons, promotions, product diagnoses, platform campaigns, open collaboration settings, sample rules and products, shop / product / SKU performance, change events, webhooks"
 )
 
 # (command, what) — the `what` column is deliberately terse; details live in --help
@@ -60,6 +60,9 @@ COMMAND_TABLE = [
     ("boost campaign groups|list|get", "TikTok platform campaigns a shop can join: eligibility, benefits, fees (read-only)"),
     ("boost campaign registered|counts", "platform campaigns the shop registered for, review counts"),
     ("boost open-collab settings|sample-rules", "open collaboration auto-add / commission; free-sample rules of 1-200 products"),
+    ("boost open-collab list", "products in open collaboration: commission rate, status, price, creators"),
+    ("boost shop-performance", "TikTok Shop Analytics: GMV, orders, buyers, traffic; --from --to (≤90 days, --to exclusive)"),
+    ("boost product-performance|sku-performance", "product / SKU sales ranking (TikTok official numbers); --sort --status"),
     ("boost shop-auth create", "authorization link for the shop owner: new shop --region, re-authorize --shop"),
     ("boost attribution list", "affiliate attribution per order line; --creator --order --since"),
     ("boost attribution get <id>", "one attribution record: amounts, settlement"),

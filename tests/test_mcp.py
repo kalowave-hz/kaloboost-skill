@@ -239,3 +239,31 @@ def test_campaign_open_collab_tools(env):
     anyio.run(check)
     assert env.requests[0][2]["invited_only"] == "true"
     assert env.requests[1][2] == {"shop_id": "s", "type": "PRODUCT"}
+
+
+def test_performance_and_open_collab_list_tools(env, monkeypatch):
+    monkeypatch.setattr("kaloboost.commands.shop_analytics._today", lambda: __import__("datetime").date(2026, 11, 27))
+    names = {"shop_performance", "product_performance", "sku_performance", "open_collab_list"}
+    assert names <= set(TOOLS)
+    env.responses["/shop-performance"] = {"data": {"latest_available_date": "2026-11-26", "intervals": []}}
+    env.responses["/open-collaborations"] = page([{"channel_open_collaboration_id": "1"}], cursor="o2")
+
+    async def check():
+        async with Client(create_server()) as client:
+            tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+            for name in names:
+                assert tools[name].annotations.read_only_hint, name  # everything in WP-24 is read-only
+            got = await client.call_tool("shop_performance", {"shop": "s", "from": "30d"})
+            assert got.structured_content == {"data": {"latest_available_date": "2026-11-26", "intervals": []}}
+            got = await client.call_tool("open_collab_list", {"shop": "s", "product_name": "serum"})
+            assert got.structured_content == {"data": {"data": [{"channel_open_collaboration_id": "1"}],
+                                                       "next_cursor": "o2"}}
+            bad = await client.call_tool("product_performance", {"shop": "s", "from": "2026-08-01"})
+            assert bad.is_error  # > 90 days
+            bad = await client.call_tool("open_collab_list", {"shop": "s", "product": "1", "product_name": "x"})
+            assert bad.is_error
+
+    anyio.run(check)
+    assert env.requests[0][2] == {"shop_id": "s", "start_date": "2026-10-28", "end_date": "2026-11-27"}
+    assert env.requests[1][2] == {"shop_id": "s", "product_name": "serum", "limit": "20"}
+    assert len(env.requests) == 2

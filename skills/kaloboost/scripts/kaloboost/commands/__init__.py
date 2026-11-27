@@ -5,12 +5,12 @@ from __future__ import annotations
 from ..core import Command
 from . import (
     account, attribution, campaign, chat, collab, content, creator, event, meta, order, outreach, resolve_job, sample,
-    shop_auth, shop_order, shop_promotion, webhook,
+    shop_analytics, shop_auth, shop_order, shop_promotion, webhook,
 )
 
 COMMANDS: list[Command] = []
 for _mod in (
-    account, creator, resolve_job, outreach, chat, collab, sample, content, order, shop_order, shop_auth, shop_promotion, campaign, attribution,
+    account, creator, resolve_job, outreach, chat, collab, sample, content, order, shop_order, shop_auth, shop_promotion, campaign, shop_analytics, attribution,
     event, webhook, meta,
 ):
     COMMANDS.extend(_mod.COMMANDS)
