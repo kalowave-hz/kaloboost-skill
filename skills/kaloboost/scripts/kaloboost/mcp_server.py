@@ -22,7 +22,10 @@ TOOLS = {
 HIDDEN_FLAGS = {"json", "file"}
 # Commands that change state upstream. Those with --yes return a dry run until yes=true.
 WRITES = {c.path for c in COMMANDS if c.flag("--yes") or c.flag("--idempotency-key")} | {"outreach upload-image", "shop-auth create"}
-DESTRUCTIVE = {"outreach cancel", "webhook update", "webhook rotate-secret", "sample review"}
+DESTRUCTIVE = {
+    "outreach cancel", "webhook update", "webhook rotate-secret", "sample review",
+    "open-collab settings set", "open-collab sample-rule set", "open-collab add", "open-collab remove",
+}
 
 
 def _confirm_param(cmd) -> str | None:
@@ -139,7 +142,7 @@ def create_server():
         instructions="Kaloboost TikTok Shop creator outreach. Call shops first for shop_id values "
                      "(the operator may have configured a default shop). IDs are strings. Lists are "
                      "cursor-paged: pass next_cursor back as cursor, or set all=true. Write tools "
-                     "(outreach_create/cancel/create_template, webhook_*) reach real creators or change "
+                     "(outreach_create/cancel/create_template, webhook_*, open_collab_*_set/add/remove) reach real creators or change "
                      "settings: they return a dry_run preview until called with yes=true after the user "
                      "confirms. Use only the configured API key: never ask the user for browser tokens or "
                      "cookies. The creator placeholder is ${handle}; merchant contacts must come from the "

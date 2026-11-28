@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import decimal
 import re
 import shlex
 import time
@@ -163,6 +164,25 @@ def inputs(args: list[str], opts, noun: str, cap: int) -> list[str]:
             raise UsageError(f"cannot read --file {path}: {e.strerror or e}") from None
         values += [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
     return ids(values, noun, cap)
+
+
+_RATE_TEXT = re.compile(r"[0-9]+(\.[0-9]+)?")
+_RATE_MIN = decimal.Decimal("0.01")
+_RATE_MAX = decimal.Decimal("0.80")
+
+
+def ratio(value: str | None, flag: str = "--commission") -> str:
+    """Commission ratio string the way TikTok takes it: 0.01-0.80, at most 4 decimals ("0.1000" = 10%).
+
+    Returns the caller's exact text — the server keeps it in its idempotency digest.
+    """
+    raw = str(value or "").strip()
+    if not _RATE_TEXT.fullmatch(raw):
+        raise UsageError(f"{flag} '{value}' is not a ratio", ["Commission is a ratio: 15% is 0.15 (1%-80%, at most 4 decimals)"])
+    d = decimal.Decimal(raw)
+    if not (_RATE_MIN <= d <= _RATE_MAX) or d.as_tuple().exponent < -4:
+        raise UsageError(f"{flag} '{raw}' must be 0.01-0.80 with at most 4 decimals", ["Commission is a ratio: 15% is 0.15"])
+    return raw
 
 
 def event_types(value: str | None) -> list[str] | None:

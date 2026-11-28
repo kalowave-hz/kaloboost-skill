@@ -8,11 +8,11 @@ description: >
   站内信), collaboration status, free samples and approving / rejecting sample applications,
   creator videos and metrics, affiliate orders and commission, full shop orders and SLA deadlines,
   shop returns / refunds / replacements, coupons and promotions, TikTok platform campaigns and
-  open collaboration (settings, free-sample rules, products and commission), TikTok Shop Analytics
+  open collaboration (settings, free-sample rules, products and commission — including changing open collaboration settings / sample rules and adding / removing products), TikTok Shop Analytics
   (shop GMV / orders / traffic, product and SKU sales rankings), generating TikTok Shop authorization
   links, change events and webhooks — 达人建联、发私信/定向邀约、建联进度、取消建联、达人聊天/站内信收发、
   合作状态、寄样/申样、审核申样、达人视频、联盟订单、佣金归因、店铺全量订单与超时预警、退货/退款/换货、
-  平台活动（Campaign）报名资格与已报名活动、公开合作设置/免费样品规则/公开合作商品与佣金、
+  平台活动（Campaign）报名资格与已报名活动、公开合作设置/免费样品规则/公开合作商品与佣金（含修改公开合作设置/样品规则、添加/移除商品）、
   店铺经营数据（GMV、订单、流量）与商品/SKU 销售排行、生成绑店授权链接、事件推送.
   Runs via the bundled `boost` CLI (Python, zero install); use it even if the user never
   says "kaloboost".
@@ -111,8 +111,8 @@ names what the account still needs) — another credential won't fix them.
 | `boost product diagnose` | TikTok listing diagnoses of 1-200 products: quality, issues, suggestions |
 | `boost campaign groups` / `list --group <id>` / `get <id> --type` | TikTok platform campaigns a shop can see: invited, eligibility, benefits, fees; read-only (register in Seller Center) |
 | `boost campaign registered` / `counts` | platform campaigns the shop registered for: status, registration / review counts |
-| `boost open-collab settings` / `sample-rules` | open collaboration auto-add + default commission; free-sample rules of 1-200 products; read-only |
-| `boost open-collab list` | products in open collaboration: current commission rate, product status, price, creators; --product\|--product-name --category |
+| `boost open-collab settings` / `sample-rules` / `list` | open collaboration auto-add + commission, free-sample rules, products in open collaboration |
+| `boost open-collab settings set` / `sample-rule set` / `add` / `remove` | `[write]` change open collaboration settings, sample rules, add / remove products (UNKNOWN = read back before retrying) |
 | `boost shop-performance` | TikTok Shop Analytics of a shop: GMV, orders, buyers, AOV, refunds, traffic; --from --to (≤90 days) --granularity DAY |
 | `boost product-performance` / `sku-performance` | product / SKU sales ranking (TikTok official numbers); --sort --status --categories (--products for SKUs) |
 | `boost attribution list` / `get <id>` | affiliate attribution per order line; --creator --order --since |
@@ -334,9 +334,9 @@ Three read-only views of a shop's seller marketing tools, live from TikTok (noth
 
 ## Platform campaigns and open collaboration
 
-Read-only views, live from TikTok (nothing stored in Kaloboost). **You can't register for or leave a
-campaign, and can't change open collaboration settings or sample rules here** — those are done in
-Seller Center; never promise them.
+Live from TikTok (nothing stored in Kaloboost). **You can't register for or leave a campaign here**
+— that is done in Seller Center; never promise it. Open collaboration, on the other hand, **can be
+changed here** with the `[write]` commands below — read "Changing open collaboration" before using them.
 
 - `boost campaign groups` (alias `campaigns`) — TikTok **platform** campaign groups (not the seller's own promotions — those are `boost promotion`). Takes a few seconds per page; don't loop it.
 - `boost campaign list --group <channel_campaign_group_id>` — campaigns of one group, with the list-level eligibility answer.
@@ -345,6 +345,10 @@ Seller Center; never promise them.
 - `boost open-collab settings` (alias `open-collaboration`) — auto-add products to open collaboration, default commission.
 - `boost open-collab sample-rules --products <id,id,...>` — free-sample rules of 1-200 products.
 - `boost open-collab list` — the shop's products in open collaboration with their current commission; `--product <id>` or `--product-name <keyword>` (not both), `--category <top-level id>`, `--sort product_original_price --order ASC|DESC` (default: creation time).
+- `boost open-collab settings set` — `[write]` change auto-add and the default commission; `--enable` or `--disable`, `--commission` required either way.
+- `boost open-collab sample-rule set <product_id>` — `[write]` activate (`--status ACTIVE --quota N --unlimited` or `--start/--end`, optional thresholds) or deactivate (`--status INACTIVE`) a product's free-sample rule.
+- `boost open-collab add <product_id> --commission <rate>` — `[write]` put one product into open collaboration.
+- `boost open-collab remove <product_id>` — `[write]` remove one product; effective midnight shop time, can't be undone.
 
 ### Reading campaigns right
 
@@ -362,6 +366,44 @@ Seller Center; never promise them.
 - **Open collaboration products** (`open-collab list`): `current_commission.rate` is a ratio string — `"0.1000"` = 10%; `start_at`/`end_at` are ISO 8601 UTC. `status` `NORMAL` = active, `TERMINATING` = the seller removed it and it ends at `end_at` (ended ones aren't listed); `UNMAPPED` carries TikTok's raw value in `channel_status`. `product.status` is `LIVE` / `OUT_OF_STOCK` / `SELLER_DEACTIVATE` / `PLATFORM_DEACTIVATE` / `GNE_REJECT` / `DELETE` / `OTHER`; `original_price` is the min-max original price over all SKUs. `showcase_creator_count` = creators who added it to their showcase, `content_creator_count` = creators who posted a live or video with it.
 - **`commission_rate`** is a ratio string: `"0.1000"` = 10%. `enabled=true` means existing non-affiliate products were added once and new products join automatically; `false` means new products don't (already added ones stay).
 - **Sample rules**: a product absent from `rules` is listed in `products_not_returned` — it has **no free-sample rule, does not exist, or is not in this shop** (TikTok doesn't say which); it is not an error, and an all-missing request still answers 200 with empty `rules`. `is_sample_time_unlimited=true` means any time (no `start_time`/`end_time`); thresholds (`minimum_follower_count`, `minimum_gmv` — TikTok's raw integer, `avg_ec_video_views`, `category_ids`, `predicted_fulfillment_rank`) are minimums a creator must meet.
+
+### Changing open collaboration
+
+The four `[write]` commands submit to TikTok in real time. Like every write they print the exact
+request (method, path, body, Idempotency-Key) without `--yes` and send nothing: show it, and only
+rerun with `--idempotency-key <key from the dry run> --yes` after the user confirms. They answer a
+uniform `data.outcome` instead of a plain success:
+
+- **`SUBMITTED`** — TikTok took it. `observed=READ_BACK` means the new state was also read back;
+  anything less is not a failure, but verify with the read command when it matters.
+- **`PLATFORM_REJECTED`** — TikTok refused (`reason` / `channel_code` say why). Don't resend the
+  same thing; tell the user.
+- **`NOT_SUBMITTED`** — nothing reached TikTok; once the cause is fixed, rerun the identical
+  command with the same `--idempotency-key`.
+- **`UNKNOWN`** — **the change may already be in effect. Do not retry — not even with the same
+  key.** Read back first: `boost open-collab settings` / `open-collab sample-rules --products <id>`
+  / `open-collab list --product <id>`. Only if the read-back shows the change did *not* happen,
+  rerun the identical command with the same key. Never retry with a new key — it could apply twice.
+  The same applies when the call itself dies (timeout / 503): retry with the same key, and if the
+  answer comes back `UNKNOWN`, switch to read-back.
+
+Rules of the operations themselves:
+
+- **Commission is a ratio string 0.01–0.80** (1%–80%, at most 4 decimals): 15% is `0.15`, `"0.1000"` = 10%.
+- **`settings set` always takes both** `--enable`/`--disable` *and* `--commission` — TikTok has no
+  "keep the current rate" form. Read the current settings first and reuse the rate unless the user
+  wants it changed.
+- **`sample-rule set`** needs `--quota` (total free samples) and either `--unlimited` (creators can
+  apply at any time) or **both** `--start` and `--end` (the application window, ISO 8601 UTC or
+  relative `24h`/`7d` from now; end after start). Thresholds (`--min-followers`, `--min-gmv`,
+  `--min-avg-video-views`, `--category-ids`, `--fulfillment-rank`) are minimums a creator must meet
+  to apply. `--status INACTIVE` takes no other field — it just turns the rule off.
+- **`add` is idempotent on TikTok**: adding a product that already is in open collaboration returns
+  the existing collaboration, not an error. But a success can still mean **nothing was created**
+  when the product doesn't exist — always verify with `open-collab list --product <id>`.
+- **`remove` can't be undone** and normally takes effect at **midnight in the shop's timezone**
+  (`terminated_effective_at`); until then the product shows as `TERMINATING`. Confirm the user means
+  it before `--yes`.
 
 ### Availability & scopes
 

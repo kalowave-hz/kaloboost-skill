@@ -267,3 +267,44 @@ def test_performance_and_open_collab_list_tools(env, monkeypatch):
     assert env.requests[0][2] == {"shop_id": "s", "start_date": "2026-10-28", "end_date": "2026-11-27"}
     assert env.requests[1][2] == {"shop_id": "s", "product_name": "serum", "limit": "20"}
     assert len(env.requests) == 2
+
+
+def test_open_collab_write_tools(env):
+    names = {"open_collab_settings_set", "open_collab_sample_rule_set", "open_collab_add", "open_collab_remove"}
+    assert names <= set(TOOLS)
+    env.responses["/open-collaborations"] = {"data": {
+        "outcome": "SUBMITTED", "reason": None, "channel_code": None, "observed": "READ_BACK",
+        "result": {"channel_open_collaboration_id": "oc1", "product_id": "p1", "effective_at": "2026-11-28T00:00:00Z"}}}
+
+    async def check():
+        async with Client(create_server()) as client:
+            tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+            for name in names:
+                assert not tools[name].annotations.read_only_hint, name
+                assert tools[name].annotations.destructive_hint, name
+                assert "UNKNOWN" in tools[name].description, name
+            for name in ("open_collab_settings", "open_collab_sample_rules", "open_collab_list"):
+                assert tools[name].annotations.read_only_hint, name
+                assert not tools[name].annotations.destructive_hint, name
+            # dry run first: nothing reaches the server, the preview names the idempotency key
+            result = await client.call_tool("open_collab_add", {"PRODUCT_ID": "p1", "shop": "s", "commission": "0.15"})
+            assert not result.is_error
+            assert env.requests == []
+            preview = result.structured_content["data"]["dry_run"]
+            assert preview["method"] == "POST" and preview["body"] == {"product_id": "p1", "commission_rate": "0.15"}
+            key = preview["idempotency_key"]
+            assert f"idempotency_key='{key}'" in result.structured_content["next"]
+            sent = await client.call_tool("open_collab_add", {"PRODUCT_ID": "p1", "shop": "s", "commission": "0.15",
+                                                              "yes": True, "idempotency_key": key})
+            assert not sent.is_error
+            assert sent.structured_content["data"]["outcome"] == "SUBMITTED"
+            bad = await client.call_tool("open_collab_add", {"PRODUCT_ID": "p1", "shop": "s", "commission": "0.9"})
+            assert bad.is_error  # rate validated locally: nothing sent
+            bad = await client.call_tool("open_collab_settings_set", {"shop": "s", "commission": "0.1"})
+            assert bad.is_error  # needs exactly one of enable / disable
+
+    anyio.run(check)
+    assert len(env.requests) == 1
+    method, path, query, headers, body = env.requests[0]
+    assert (method, path) == ("POST", "/open-collaborations")
+    assert headers["idempotency-key"] and body == {"product_id": "p1", "commission_rate": "0.15"}

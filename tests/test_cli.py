@@ -1677,3 +1677,187 @@ def test_open_collab_list_by_product_and_validation(capsys, env):
         code, out = run(capsys, "open-collab", "list", "--shop", "s", *argv)
         assert code == 2, (argv, out)
     assert len(env.requests) == 1
+
+
+# --- open collaboration writes (WP-24 batch 4) ---------------------------------------
+
+def test_open_collab_settings_set_is_dry_run_until_yes(capsys, env):
+    code, out = run(capsys, "open-collab", "settings", "set", "--shop", "s", "--enable", "--commission", "0.1000")
+    assert code == 0 and out.startswith("dry_run:") and env.requests == []
+    assert "method: PUT" in out and "path: /open-collaboration-settings" in out
+    key = next(l.split(": ", 1)[1] for l in out.splitlines() if l.strip().startswith("idempotency_key:"))
+    assert f"--idempotency-key {key} --yes" in out
+    env.responses["/open-collaboration-settings"] = {"data": {
+        "outcome": "SUBMITTED", "reason": None, "channel_code": None, "observed": "READ_BACK", "result": None}}
+    code, out = run(capsys, "open-collab", "settings", "set", "--shop", "s", "--enable", "--commission", "0.1000",
+                    "--idempotency-key", "k1", "--yes")
+    assert code == 0, out
+    method, path, query, headers, body = env.requests[0]
+    assert (method, path, query) == ("PUT", "/open-collaboration-settings", {"shop_id": "s"})
+    assert body == {"auto_add_product": {"enabled": True, "commission_rate": "0.1000"}}
+    assert headers["idempotency-key"] == "k1"
+    assert "outcome: SUBMITTED" in out and "0.1000 = 10%" in out
+    assert "do NOT retry" not in out
+
+
+def test_open_collab_settings_set_validates_locally(capsys, env):
+    for argv in (["--enable"], ["--commission", "0.1"], ["--enable", "--disable", "--commission", "0.1"],
+                 ["--enable", "--commission", "0"], ["--enable", "--commission", "0.81"],
+                 ["--enable", "--commission", "0.12345"], ["--enable", "--commission", "15%"],
+                 ["--enable", "--commission", "1e-2"], ["--enable", "--commission", "abc"]):
+        code, out = run(capsys, "open-collab", "settings", "set", "--shop", "s", *argv)
+        assert code == 2, (argv, out)
+    assert env.requests == []
+    code, out = run(capsys, "open-collab", "settings", "set", "--shop", "s", "--disable", "--commission", "0.05", "--json")
+    assert code == 0
+    preview = json.loads(out)["dry_run"]
+    assert preview["body"] == {"auto_add_product": {"enabled": False, "commission_rate": "0.05"}}
+
+
+def test_open_collab_settings_set_unknown_warns_read_back_first(capsys, env):
+    env.responses["/open-collaboration-settings"] = {"data": {
+        "outcome": "UNKNOWN", "reason": None, "channel_code": None, "observed": None, "result": None}}
+    code, out = run(capsys, "open-collab", "settings", "set", "--shop", "s", "--enable", "--commission", "0.1", "--yes")
+    assert code == 0, out
+    assert "WARNING outcome=UNKNOWN" in out
+    assert "may already have taken effect" in out and "do NOT retry" in out
+    assert "boost open-collab settings --shop s" in out
+    assert "never retry with a new key" in out
+    code, out = run(capsys, "open-collab", "settings", "set", "--shop", "s", "--enable", "--commission", "0.1",
+                    "--yes", "--json")
+    assert json.loads(out)["outcome"] == "UNKNOWN"
+
+
+def test_open_collab_settings_set_platform_rejected_and_not_submitted(capsys, env):
+    env.responses["/open-collaboration-settings"] = {"data": {
+        "outcome": "PLATFORM_REJECTED", "reason": "RISK_CONTROL", "channel_code": "10001", "observed": None, "result": None}}
+    code, out = run(capsys, "open-collab", "settings", "set", "--shop", "s", "--enable", "--commission", "0.1", "--yes")
+    assert code == 0 and "TikTok refused it" in out and "don't resend" in out
+    env.responses["/open-collaboration-settings"] = {"data": {
+        "outcome": "NOT_SUBMITTED", "reason": None, "channel_code": None, "observed": None, "result": None}}
+    code, out = run(capsys, "open-collab", "settings", "set", "--shop", "s", "--enable", "--commission", "0.1", "--yes")
+    assert code == 0 and "Nothing reached TikTok" in out
+
+
+def test_open_collab_settings_set_503_keeps_key_and_unknown_advice(capsys, env):
+    env.responses["/open-collaboration-settings"] = err(503, "UPSTREAM_UNAVAILABLE")
+    code, out = run(capsys, "open-collab", "settings", "set", "--shop", "s", "--enable", "--commission", "0.1",
+                    "--idempotency-key", "k9", "--yes")
+    assert code == 1
+    assert {r[3]["idempotency-key"] for r in env.requests} == {"k9"}
+    assert "--idempotency-key k9" in out
+    assert "outcome=UNKNOWN" in out and "read it back" in out
+
+
+def test_open_collab_sample_rule_set_active_bodies(capsys, env):
+    code, out = run(capsys, "open-collab", "sample-rule", "set", "p1", "--shop", "s", "--status", "ACTIVE",
+                    "--quota", "50", "--unlimited", "--json")
+    assert code == 0, out
+    assert json.loads(out)["dry_run"]["body"] == {"status": "ACTIVE", "sample_quota": 50, "time_unlimited": True}
+    env.responses["/open-collaboration-sample-rules/p1"] = {"data": {
+        "outcome": "SUBMITTED", "reason": None, "channel_code": None, "observed": None, "result": None}}
+    code, out = run(capsys, "open-collab", "sample-rule", "set", "p1", "--shop", "s", "--status", "ACTIVE",
+                    "--quota", "50", "--start", "24h", "--end", "7d", "--min-followers", "1000", "--min-gmv", "0",
+                    "--min-avg-video-views", "500", "--category-ids", "c1,c2", "--fulfillment-rank", "LOW", "--yes")
+    assert code == 0, out
+    method, path, query, _, body = env.requests[0]
+    assert (method, path, query) == ("PUT", "/open-collaboration-sample-rules/p1", {"shop_id": "s"})
+    assert body["status"] == "ACTIVE" and body["time_unlimited"] is False
+    assert body["start_at"] < body["end_at"] and body["start_at"].endswith("Z")
+    assert body["thresholds"] == {"minimum_follower_count": 1000, "minimum_gmv": 0, "avg_ec_video_views": 500,
+                                  "category_ids": ["c1", "c2"], "predicted_fulfillment_rank": "LOW"}
+    assert "observed is not READ_BACK" in out  # not read back: verify hint
+    assert "sample-rules --shop s --products p1" in out
+
+
+def test_open_collab_sample_rule_set_inactive_carries_no_detail(capsys, env):
+    code, out = run(capsys, "open-collab", "sample-rule", "set", "p1", "--shop", "s", "--status", "INACTIVE", "--json")
+    assert code == 0
+    assert json.loads(out)["dry_run"]["body"] == {"status": "INACTIVE"}
+    for extra in (["--quota", "5"], ["--unlimited"], ["--start", "24h"], ["--end", "7d"],
+                  ["--min-followers", "1"], ["--fulfillment-rank", "ALL"]):
+        code, out = run(capsys, "open-collab", "sample-rule", "set", "p1", "--shop", "s", "--status", "INACTIVE", *extra)
+        assert code == 2, (extra, out)
+    assert env.requests == []
+
+
+def test_open_collab_sample_rule_set_validates_locally(capsys, env):
+    base = ["open-collab", "sample-rule", "set", "p1", "--shop", "s"]
+    for extra in ([], ["--status", "ACTIVE"],  # no quota, no window
+                  ["--status", "ACTIVE", "--quota", "0", "--unlimited"],
+                  ["--status", "ACTIVE", "--quota", "5"],  # no window
+                  ["--status", "ACTIVE", "--quota", "5", "--unlimited", "--start", "24h"],
+                  ["--status", "ACTIVE", "--quota", "5", "--start", "24h"],  # missing end
+                  ["--status", "ACTIVE", "--quota", "5", "--start", "7d", "--end", "24h"],  # end before start
+                  ["--status", "ACTIVE", "--quota", "5", "--unlimited", "--min-followers", "-1"],
+                  ["--status", "ACTIVE", "--quota", "5", "--unlimited", "--fulfillment-rank", "TOP"]):
+        code, out = run(capsys, *base, *extra)
+        assert code == 2, (extra, out)
+    code, out = run(capsys, "open-collab", "sample-rule", "set", "a/b", "--shop", "s", "--status", "INACTIVE")
+    assert code == 2
+    assert env.requests == []
+
+
+def test_open_collab_add_is_dry_run_until_yes(capsys, env):
+    code, out = run(capsys, "open-collab", "add", "p1", "--shop", "s", "--commission", "0.15")
+    assert code == 0 and out.startswith("dry_run:") and env.requests == []
+    env.responses["/open-collaborations"] = {"data": {
+        "outcome": "SUBMITTED", "reason": None, "channel_code": None, "observed": "READ_BACK",
+        "result": {"channel_open_collaboration_id": "oc1", "product_id": "p1", "effective_at": "2026-11-28T00:00:00Z"}}}
+    code, out = run(capsys, "open-collab", "add", "p1", "--shop", "s", "--commission", "0.15",
+                    "--idempotency-key", "k2", "--yes")
+    assert code == 0, out
+    method, path, query, headers, body = env.requests[0]
+    assert (method, path, query) == ("POST", "/open-collaborations", {"shop_id": "s"})
+    assert body == {"product_id": "p1", "commission_rate": "0.15"} and headers["idempotency-key"] == "k2"
+    assert "channel_open_collaboration_id: oc1" in out
+    assert "nothing was created when the product doesn't exist" in out
+    assert "already is in open collaboration" in out
+
+
+def test_open_collab_add_validates_and_unknown_points_to_search(capsys, env):
+    for argv in ([], ["--commission", "0.9"], ["--commission", "x"]):
+        code, out = run(capsys, "open-collab", "add", "p1", "--shop", "s", *argv)
+        assert code == 2, (argv, out)
+    code, out = run(capsys, "open-collab", "add", "a%2F", "--shop", "s", "--commission", "0.1")
+    assert code == 2
+    assert env.requests == []
+    env.responses["/open-collaborations"] = {"data": {
+        "outcome": "UNKNOWN", "reason": None, "channel_code": None, "observed": None, "result": None}}
+    code, out = run(capsys, "open-collab", "add", "p1", "--shop", "s", "--commission", "0.1", "--yes")
+    assert code == 0 and "WARNING outcome=UNKNOWN" in out
+    assert "boost open-collab list --shop s --product p1" in out
+
+
+def test_open_collab_remove_is_delete_and_explains_midnight(capsys, env):
+    code, out = run(capsys, "open-collab", "remove", "p1", "--shop", "s")
+    assert code == 0 and out.startswith("dry_run:") and env.requests == []
+    assert "method: DELETE" in out
+    env.responses["/open-collaborations/p1"] = {"data": {
+        "outcome": "SUBMITTED", "reason": None, "channel_code": None, "observed": "READ_BACK",
+        "result": {"terminated_effective_at": "2026-11-29T00:00:00Z"}}}
+    code, out = run(capsys, "open-collab", "remove", "p1", "--shop", "s", "--idempotency-key", "k3", "--yes")
+    assert code == 0, out
+    method, path, query, headers, body = env.requests[0]
+    assert (method, path, query) == ("DELETE", "/open-collaborations/p1", {"shop_id": "s"})
+    assert body is None and headers["idempotency-key"] == "k3"
+    assert "midnight in the shop's timezone (2026-11-29T00:00:00Z)" in out
+    assert "can't be undone" in out and "TERMINATING" in out
+
+
+def test_open_collab_remove_validates_product_id(capsys, env):
+    code, out = run(capsys, "open-collab", "remove", "a/b", "--shop", "s", "--yes")
+    assert code == 2 and env.requests == []
+
+
+def test_open_collab_read_commands_still_resolve(capsys, env):
+    # the nested write subcommands must not shadow the reads or the bare-noun default
+    env.responses["/open-collaboration-settings"] = {
+        "data": {"auto_add_product": {"enabled": True, "commission_rate": "0.1000"}}, "request_id": "r"}
+    code, out = run(capsys, "open-collab", "settings", "--shop", "s")
+    assert code == 0 and "auto_add_product_enabled: true" in out
+    assert env.requests[0][0] == "GET"
+    code, out = run(capsys, "open-collab", "--shop", "s")
+    assert code == 0 and env.requests[1][0] == "GET"
+    code, out = run(capsys, "open-collab", "settings", "--help")
+    assert code == 0 and "read-only" in out

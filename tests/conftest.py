@@ -28,6 +28,8 @@ class MockBoost(BaseHTTPRequestHandler):
             self._respond(json.loads(raw) if raw else None)
 
     do_PATCH = do_POST
+    do_PUT = do_POST
+    do_DELETE = do_POST
 
     def do_GET(self):
         self._respond(None)
