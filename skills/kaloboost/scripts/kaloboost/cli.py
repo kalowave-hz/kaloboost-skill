@@ -14,7 +14,7 @@ def _index():
     groups: dict[str, dict[str, object]] = {}
     for cmd in COMMANDS:
         parts = cmd.path.split()
-        groups.setdefault(parts[0], {})[parts[1] if len(parts) > 1 else ""] = cmd
+        groups.setdefault(parts[0], {})[" ".join(parts[1:])] = cmd
     return groups
 
 
@@ -30,8 +30,12 @@ def _resolve(argv: list[str]):
         )
     if "" in group:  # single command (no subcommands)
         return group[""], argv[1:]
-    if len(argv) > 1 and argv[1] in group:
-        return group[argv[1]], argv[2:]
+    # longest match first: a subcommand can be two words ("settings set" next to "settings")
+    for width in (2, 1):
+        if len(argv) > width:
+            sub = " ".join(argv[1:1 + width])
+            if sub in group:
+                return group[sub], argv[1 + width:]
     default = DEFAULT_SUB.get(head)
     if default and (len(argv) == 1 or argv[1].startswith("-")):
         # content first: `boost sample --shop X` runs `sample list`
