@@ -4,7 +4,7 @@ Agent skill for [Kaloboost](https://www.kaloboost.com) — a TikTok Shop seller'
 
 The skill bundles a zero-dependency CLI (`boost`, Python 3.11+ stdlib only). Installing the skill is all it takes: the agent runs the CLI straight from the skill directory. It covers every endpoint of the Kaloboost OpenAPI v1.
 
-Write commands (`outreach create/create-template/cancel`, `chat send`, `sample review`, `webhook create/update/rotate-secret/test/replay`) only print the request until you add `--yes`.
+Write commands (`outreach create/create-template/cancel`, `chat send`, `sample review`, `webhook create/update/rotate-secret/test/replay`, `open-collab settings set` / `sample-rule set` / `add` / `remove`) only print the request until you add `--yes`.
 
 ## Install
 
