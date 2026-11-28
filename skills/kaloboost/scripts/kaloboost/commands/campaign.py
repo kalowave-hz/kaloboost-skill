@@ -1,19 +1,22 @@
 """`boost campaign` / `boost open-collab` — TikTok platform campaigns of a shop and its open
 collaboration settings / free-sample rules / products in open collaboration, read live from TikTok (nothing is stored in Kaloboost).
 
-Everything here is read-only: registering for or leaving a campaign, and changing open
-collaboration, are only possible in Seller Center. TikTok's rule for these routes is "missing =
-unknown": a `null` boolean or count means TikTok gave no answer — never read it as false / 0 /
-"may register".
+Campaigns stay read-only: registering for or leaving a campaign is only possible in Seller Center.
+Open collaboration can also be *changed* here (`settings set` / `sample-rule set` / `add` / `remove`,
+all `[write]`): they submit to TikTok in real time under an Idempotency-Key. TikTok's rule for the
+read routes is "missing = unknown": a `null` boolean or count means TikTok gave no answer — never
+read it as false / 0 / "may register".
 """
 
 from __future__ import annotations
 
 import re
+import urllib.parse
+import uuid
 
 from .. import api, render
 from ..core import Command, Flag
-from ..errors import UsageError
+from ..errors import BoostError, UsageError
 from . import common
 
 CAMPAIGN_TYPES = ("PRODUCT", "SHOP", "LIVESTREAM", "SHORT_VIDEO")
@@ -378,7 +381,8 @@ def open_collab_settings(cfg, opts, args):
         "commission_rate is a ratio string" + (f": {auto['commission_rate']} = {rate}" if rate else " (\"0.1000\" = 10%)"),
         "enabled=true: existing non-affiliate products were added once and new products join automatically; "
         "false: new products don't (already added ones stay) · null = TikTok gave no answer",
-        "Read-only: open collaboration is changed in Seller Center",
+        "Change it: `boost open-collab settings set --shop " + shop + " --enable|--disable --commission <rate>` "
+        "(dry run first) — outcome UNKNOWN means read this back before retrying",
     ]
     render.emit_help(hints)
     return 0
@@ -435,7 +439,8 @@ def open_collab_sample_rules(cfg, opts, args):
              "start_time/end_time are the sample application window (ISO 8601 UTC); 'unlimited' = any time",
              "min_gmv is TikTok's raw integer (30-day GMV must exceed it); add --json for avg_ec_video_views, "
              "category_ids and predicted_fulfillment_rank thresholds",
-             "Read-only: sample rules are changed in Seller Center"]
+             "Change one: `boost open-collab sample-rule set <product_id> --shop " + shop + " --status ACTIVE|INACTIVE ...` "
+     "(dry run first; UNKNOWN = read back before retrying)"]
     render.emit_help(hints)
     return 0
 
@@ -521,10 +526,210 @@ def open_collab_list(cfg, opts, args):
         "of all SKUs",
         "showcase_creators = creators who added it to their showcase; content_creators = creators who posted a "
         "live or video with it · null = TikTok gave no answer",
-        "Read-only: open collaboration is changed in Seller Center",
+        "Change it: `boost open-collab add|remove <product_id> --shop " + shop + "` (dry run first; removal takes "
+        "effect at midnight shop time and can't be undone; UNKNOWN = read back before retrying)",
     ]
     render.emit_help(common.page_hints(rows, cursor, pages, base, opts, hints))
     return 0
+
+
+# --- open collaboration writes --------------------------------------------------------
+#
+# All four submit to TikTok in real time under an Idempotency-Key and answer a uniform
+# `data.outcome`: SUBMITTED (TikTok took it), PLATFORM_REJECTED (TikTok refused: reason /
+# channel_code), NOT_SUBMITTED (never reached TikTok), UNKNOWN (may have taken effect — the
+# dangerous one: read back before any retry, and never retry with a new key).
+
+FULFILLMENT_RANKS = ("ALL", "LOW", "MEDIUM", "HIGH")
+QUOTA_MAX = 2147483647
+
+
+def _q(value: str) -> str:
+    return urllib.parse.quote(value, safe="")
+
+
+def _object_id(value: str, what: str = "product id") -> str:
+    v = (value or "").strip()
+    if not _OBJECT_ID.fullmatch(v):
+        raise UsageError(f"{what} must match [A-Za-z0-9_-]{{1,64}}, got '{value}'")
+    return v
+
+
+def _send_write(cfg, opts, method: str, path: str, *, body: dict | None = None, shop: str) -> dict | None:
+    key = opts.get("idempotency_key") or str(uuid.uuid4())
+    try:
+        return common.send(cfg, opts, method, path, params={"shop_id": shop}, body=body,
+                           key=key, confirm_flags=f"--idempotency-key {key} --yes", timeout=40.0)
+    except BoostError as e:
+        if e.kind == "network":
+            e.help_lines.append(
+                "If the retry answers outcome=UNKNOWN, stop retrying: the change may already be in effect — "
+                "read it back with the matching read command first")
+        raise
+
+
+def _emit_outcome(opts, data: dict, *, noun: str, readback: str, extra: list[str] | None = None) -> int:
+    if opts.get("json"):
+        common.dump_json(data)
+        return 0
+    render.emit_detail(noun, data)
+    outcome = data.get("outcome")
+    hints: list[str] = []
+    if outcome == "UNKNOWN":
+        hints += [
+            "WARNING outcome=UNKNOWN: the request may already have taken effect on TikTok — do NOT retry yet",
+            f"Read it back first: `{readback}`",
+            "Only if the read-back shows the change did not happen, rerun the identical command with the same "
+            "--idempotency-key — never retry with a new key, it could apply the change twice",
+        ]
+    elif outcome == "PLATFORM_REJECTED":
+        hints.append("TikTok refused it (reason / channel_code above) — don't resend the same thing; tell the user")
+    elif outcome == "NOT_SUBMITTED":
+        hints.append("Nothing reached TikTok — once the cause is fixed, rerun the identical command with the same "
+                     "--idempotency-key")
+    hints += list(extra or [])
+    if outcome == "SUBMITTED" and data.get("observed") != "READ_BACK":
+        hints.append(f"observed is not READ_BACK: the new state was not read back — verify with `{readback}`")
+    render.emit_help(hints)
+    return 0
+
+
+def _commission(opts) -> str:
+    if opts.get("commission") is None:
+        raise UsageError("--commission is required", ["Commission is a ratio: 15% is 0.15 (1%-80%, at most 4 decimals)"])
+    return common.ratio(opts.get("commission"))
+
+
+def open_collab_settings_set(cfg, opts, args):
+    shop = common.shop(cfg, opts)
+    enable, disable = bool(opts.get("enable")), bool(opts.get("disable"))
+    if enable and disable:
+        raise UsageError("--enable and --disable can't be combined", ["Pick one"])
+    if not enable and not disable:
+        raise UsageError(
+            "settings set needs --enable or --disable",
+            ["--enable: existing non-affiliate products are added once and new products join open collaboration "
+             "automatically; --disable: new products don't (already added ones stay)"],
+        )
+    rate = _commission(opts)
+    body = {"auto_add_product": {"enabled": enable, "commission_rate": rate}}
+    env = _send_write(cfg, opts, "PUT", "/open-collaboration-settings", body=body, shop=shop)
+    if env is None:
+        return 0
+    readback = f"boost open-collab settings --shop {shop}"
+    return _emit_outcome(opts, env.get("data") or {}, noun="open_collaboration_settings_write", readback=readback,
+                         extra=[f"commission_rate is a ratio string: {rate} = {_rate_percent(rate)} · verify: `{readback}`"])
+
+
+def _non_negative(value, flag: str) -> int | None:
+    if value is None:
+        return None
+    if value < 0:
+        raise UsageError(f"{flag} must be 0 or more, got {value}")
+    return value
+
+
+def open_collab_sample_rule_set(cfg, opts, args):
+    shop = common.shop(cfg, opts)
+    pid = _object_id(args[0])
+    status = (opts.get("status") or "").strip().upper()
+    if not status:
+        raise UsageError("--status is required", ["--status ACTIVE sets / replaces the rule, --status INACTIVE turns it off"])
+    quota = opts.get("quota")
+    unlimited = bool(opts.get("unlimited"))
+    start_raw, end_raw = opts.get("start"), opts.get("end")
+    followers = _non_negative(opts.get("min_followers"), "--min-followers")
+    gmv = _non_negative(opts.get("min_gmv"), "--min-gmv")
+    views = _non_negative(opts.get("min_avg_video_views"), "--min-avg-video-views")
+    rank = (opts.get("fulfillment_rank") or "").strip().upper() or None
+    categories = None
+    if opts.get("category_ids") is not None:
+        categories = [_object_id(p, "category id") for p in common.ids([opts["category_ids"]], "category id", cap=100)]
+    rule_flags = (quota is not None or unlimited or start_raw or end_raw or followers is not None or gmv is not None
+                  or views is not None or categories is not None or rank)
+    if status == "INACTIVE":
+        if rule_flags:
+            raise UsageError(
+                "--status INACTIVE takes no rule fields — TikTok rejects any detail with it",
+                ["Drop --quota / --unlimited / --start / --end and the threshold flags to deactivate the rule"],
+            )
+        body = {"status": "INACTIVE"}
+    else:
+        if quota is None:
+            raise UsageError("--status ACTIVE needs --quota", ["--quota 1-2147483647: total free samples creators can apply for"])
+        if not 1 <= quota <= QUOTA_MAX:
+            raise UsageError(f"--quota must be 1-{QUOTA_MAX}, got {quota}")
+        if unlimited and (start_raw or end_raw):
+            raise UsageError("--unlimited can't be combined with --start / --end",
+                             ["Unlimited means creators can apply at any time; drop the window"])
+        start_at = end_at = None
+        if not unlimited:
+            if not start_raw or not end_raw:
+                raise UsageError("--status ACTIVE needs --unlimited or both --start and --end",
+                                 ["Times: 30m | 24h | 7d (from now) | yyyy-MM-dd | ISO 8601 UTC — the sample application window"])
+            start_at = common.parse_future(start_raw, "--start")
+            end_at = common.parse_future(end_raw, "--end")
+            if end_at <= start_at:
+                raise UsageError("--end must be after --start", [f"got start {start_at}, end {end_at}"])
+        body = {"status": "ACTIVE", "sample_quota": quota, "time_unlimited": unlimited}
+        if start_at:
+            body["start_at"] = start_at
+            body["end_at"] = end_at
+        thresholds = {}
+        if followers is not None:
+            thresholds["minimum_follower_count"] = followers
+        if gmv is not None:
+            thresholds["minimum_gmv"] = gmv
+        if views is not None:
+            thresholds["avg_ec_video_views"] = views
+        if categories is not None:
+            thresholds["category_ids"] = categories
+        if rank:
+            thresholds["predicted_fulfillment_rank"] = rank
+        if thresholds:
+            body["thresholds"] = thresholds
+    env = _send_write(cfg, opts, "PUT", f"/open-collaboration-sample-rules/{_q(pid)}", body=body, shop=shop)
+    if env is None:
+        return 0
+    readback = f"boost open-collab sample-rules --shop {shop} --products {pid}"
+    return _emit_outcome(opts, env.get("data") or {}, noun="open_collaboration_sample_rule_write", readback=readback,
+                         extra=[f"verify: `{readback}`"])
+
+
+def open_collab_add(cfg, opts, args):
+    shop = common.shop(cfg, opts)
+    pid = _object_id(args[0])
+    rate = _commission(opts)
+    body = {"product_id": pid, "commission_rate": rate}
+    env = _send_write(cfg, opts, "POST", "/open-collaborations", body=body, shop=shop)
+    if env is None:
+        return 0
+    readback = f"boost open-collab list --shop {shop} --product {pid}"
+    data = env.get("data") or {}
+    extra = [
+        "Creation is idempotent on TikTok: if the product already is in open collaboration this returns the "
+        "existing collaboration, not an error",
+        f"A success can still mean nothing was created when the product doesn't exist — verify: `{readback}`",
+    ]
+    return _emit_outcome(opts, data, noun="open_collaboration_create", readback=readback, extra=extra)
+
+
+def open_collab_remove(cfg, opts, args):
+    shop = common.shop(cfg, opts)
+    pid = _object_id(args[0])
+    env = _send_write(cfg, opts, "DELETE", f"/open-collaborations/{_q(pid)}", shop=shop)
+    if env is None:
+        return 0
+    readback = f"boost open-collab list --shop {shop} --product {pid}"
+    data = env.get("data") or {}
+    result = data.get("result") or {}
+    when = result.get("terminated_effective_at")
+    extra = [
+        "Removal can't be undone: it takes effect at midnight in the shop's timezone"
+        + (f" ({when})" if when else "") + "; until then the product shows as TERMINATING",
+        f"verify: `{readback}`",
+    ]
+    return _emit_outcome(opts, data, noun="open_collaboration_remove", readback=readback, extra=extra)
 
 
 def _locale_flag() -> Flag:
@@ -645,5 +850,83 @@ COMMANDS = [
         ],
         pos_max=1,
         examples=["boost open-collab sample-rules --shop <SHOP_ID> --products <id,id>"],
+    ),
+    Command(
+        path="open-collab settings set",
+        summary="[write] Change auto-add of open collaboration: new products join automatically with a default "
+                "commission (outcome UNKNOWN = may have taken effect — read back before retrying)",
+        handler=open_collab_settings_set,
+        flags=[
+            common.shop_flag(),
+            Flag("--enable", "turn auto-add on (exactly one of --enable / --disable)", kind="flag", default=False),
+            Flag("--disable", "turn auto-add off; already added products stay", kind="flag", default=False),
+            Flag("--commission", "default commission ratio 0.01-0.80, ≤4 decimals: 15% is 0.15 (required)", metavar="RATE"),
+            common.key_flag(),
+            common.yes_flag(),
+        ],
+        examples=[
+            "boost open-collab settings set --shop <SHOP_ID> --enable --commission 0.10",
+            "boost open-collab settings set --shop <SHOP_ID> --disable --commission 0.10 --yes",
+        ],
+    ),
+    Command(
+        path="open-collab sample-rule set",
+        summary="[write] Activate or deactivate the free-sample rule of one product (outcome UNKNOWN = may have "
+                "taken effect — read back before retrying)",
+        handler=open_collab_sample_rule_set,
+        flags=[
+            common.shop_flag(),
+            Flag("--status", "ACTIVE sets the rule, INACTIVE turns it off (required)", choices=("ACTIVE", "INACTIVE"), metavar="STATUS"),
+            Flag("--quota", "total free samples creators can apply for, 1-2147483647 (required with ACTIVE)", kind="int", metavar="N"),
+            Flag("--unlimited", "creators can apply at any time (not with --start/--end)", kind="flag", default=False),
+            Flag("--start", "application window start: 30m|24h|7d from now, yyyy-MM-dd or ISO 8601 UTC", metavar="WHEN"),
+            Flag("--end", "application window end, after --start (required with --start)", metavar="WHEN"),
+            Flag("--min-followers", "threshold: creator minimum follower count, ≥0", kind="int", metavar="N"),
+            Flag("--min-gmv", "threshold: creator minimum 30-day GMV, TikTok's raw integer, ≥0", kind="int", metavar="N"),
+            Flag("--min-avg-video-views", "threshold: creator minimum average video views, ≥0", kind="int", metavar="N"),
+            Flag("--category-ids", "threshold: comma-separated creator category ids (≤100)", metavar="IDS"),
+            Flag("--fulfillment-rank", "threshold: predicted fulfillment rank", choices=FULFILLMENT_RANKS, metavar="RANK"),
+            common.key_flag(),
+            common.yes_flag(),
+        ],
+        positional="PRODUCT_ID",
+        pos_min=1,
+        pos_max=1,
+        examples=[
+            "boost open-collab sample-rule set <PRODUCT_ID> --shop <SHOP_ID> --status ACTIVE --quota 50 --unlimited",
+            "boost open-collab sample-rule set <PRODUCT_ID> --shop <SHOP_ID> --status ACTIVE --quota 50 --start 24h --end 7d --min-followers 1000",
+            "boost open-collab sample-rule set <PRODUCT_ID> --shop <SHOP_ID> --status INACTIVE --yes",
+        ],
+    ),
+    Command(
+        path="open-collab add",
+        summary="[write] Put one product into open collaboration with a commission rate (outcome UNKNOWN = may "
+                "have been created — search before retrying)",
+        handler=open_collab_add,
+        flags=[
+            common.shop_flag(),
+            Flag("--commission", "commission ratio 0.01-0.80, ≤4 decimals: 15% is 0.15 (required)", metavar="RATE"),
+            common.key_flag(),
+            common.yes_flag(),
+        ],
+        positional="PRODUCT_ID",
+        pos_min=1,
+        pos_max=1,
+        examples=["boost open-collab add <PRODUCT_ID> --shop <SHOP_ID> --commission 0.15"],
+    ),
+    Command(
+        path="open-collab remove",
+        summary="[write] Remove one product from open collaboration — effective midnight in the shop's timezone, "
+                "can't be undone (outcome UNKNOWN = may be removing — read back before retrying)",
+        handler=open_collab_remove,
+        flags=[
+            common.shop_flag(),
+            common.key_flag(),
+            common.yes_flag(),
+        ],
+        positional="PRODUCT_ID",
+        pos_min=1,
+        pos_max=1,
+        examples=["boost open-collab remove <PRODUCT_ID> --shop <SHOP_ID>"],
     ),
 ]
